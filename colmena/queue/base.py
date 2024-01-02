@@ -157,6 +157,8 @@ class ColmenaQueues:
         """
         self._check_role(QueueRole.CLIENT, 'get_result')
 
+        ## TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
+        
         # Get a value
         message = self._get_result(timeout=timeout, topic=topic)
         logger.debug(f'Received value: {str(message)[:25]}')
@@ -199,6 +201,8 @@ class ColmenaQueues:
             Task ID
         """
         self._check_role(QueueRole.CLIENT, 'send_inputs')
+        
+        ## TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
 
         # Make sure the queue topic exists
         assert topic in self.topics, f'Unknown topic: {topic}. Known are: {", ".join(self.topics)}'
