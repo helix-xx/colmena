@@ -17,8 +17,11 @@ class PipeQueues(ColmenaQueues):
                  serialization_method: Union[str, SerializationMethod] = SerializationMethod.PICKLE,
                  keep_inputs: bool = True,
                  proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
-                 proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None):
-        super().__init__(topics, serialization_method, keep_inputs, proxystore_name, proxystore_threshold)
+                 proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
+                 available_task_capacity: Optional[int] = 100, # add for evoscheduler
+                 estimate_methods: Optional[Dict[str, callable]] = None,
+                 available_resources = {"cpu": 64, "gpu": 4, "memory": "128G"}):
+        super().__init__(topics, serialization_method, keep_inputs, proxystore_name, proxystore_threshold, available_task_capacity, estimate_methods, available_resources)
 
         # Make the queues
         self.request_queue = Pipe(duplex=False)

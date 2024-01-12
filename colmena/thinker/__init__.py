@@ -3,7 +3,9 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial, update_wrapper
 from threading import Event, local, Thread, Barrier
+import threading
 from time import perf_counter
+import time
 from traceback import TracebackException
 from typing import Optional, Callable, List, Union, Dict, Tuple
 
@@ -82,15 +84,29 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
     # Determine the number of threads
     if not isinstance(n_slots, int):
         n_slots = getattr(thinker, n_slots)
+        
+    # submit_time_out_event = Event()
+    def timeout_callback(thinker: 'BaseThinker'):
+        thinker.submit_time_out_event.set()
+        # print("Function timed out")
 
     while not thinker.done.is_set():
         # Wait until resources are free or thinker.done is set
-        acq_success = thinker.rec.acquire(task_type, n_slots, cancel_if=thinker.done)
-        if acq_success:
+        ## YXX drop resource counter here
+        # acq_success = thinker.rec.acquire(task_type, n_slots, cancel_if=thinker.done)
+        # if acq_success:
+        ## add timer, if time out, that means no more task to submit, trigger evoscheduler
+        if True:
+            timer = threading.Timer(1, timeout_callback) # if no task to submit in 1 second, trigger evoscheduler
             thinker.logger.info(f'Acquired {n_slots} execution slots of type {task_type}')
             start_time = perf_counter()
-            process_func(thinker)
+            try:
+                timer.start()
+                process_func(thinker)
+            finally:
+                timer.cancel()
             thinker.logger.info(f'Finished submitting new work. Runtime: {perf_counter() - start_time:.4e}s')
+            
 
 
 def task_submitter(func: Optional[Callable] = None, task_type: str = None, n_slots: Union[int, str] = 1):
@@ -142,6 +158,8 @@ def _event_responder_agent(thinker: 'BaseThinker', process_func: Callable, event
 
             start_time = perf_counter()
             # If desired, launch the resource-allocation thread
+            ## YXX drop resource counter here
+            assert(reallocate_resources is False), "reallocate_resources is not supported, YXX drop resource counter here"
             if reallocate_resources:
                 reallocator_thread = ReallocatorThread(
                     thinker.rec, gather_from=gather_from, gather_to=gather_to,

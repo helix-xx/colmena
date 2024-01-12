@@ -1,17 +1,22 @@
 """Base classes for queues and related functions"""
+import queue
+import re
+import resource
 import warnings
 from abc import abstractmethod
 from enum import Enum
 from threading import Lock, Event
-from typing import Optional, Tuple, Any, Collection, Union, Dict, Set
+from typing import Callable, Optional, Tuple, Any, Collection, Union, Dict, Set
 import logging
+from attr import dataclass
+from numpy import tri
 
 import proxystore.store
 
 from colmena.models import Result, SerializationMethod, ResourceRequirements
+from colmena.queue import evo_sch
 
 logger = logging.getLogger(__name__)
-
 
 class QueueRole(str, Enum):
     """Role a queue is used for"""
@@ -19,7 +24,7 @@ class QueueRole(str, Enum):
     ANY = 'any'
     SERVER = 'server'
     CLIENT = 'client'
-
+    
 
 class ColmenaQueues:
     """Base class for a queue used in Colmena.
@@ -33,7 +38,10 @@ class ColmenaQueues:
                  serialization_method: Union[str, SerializationMethod] = SerializationMethod.JSON,
                  keep_inputs: bool = True,
                  proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
-                 proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None):
+                 proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
+                 available_task_capacity: Optional[int] = 100,
+                 estimate_methods: Optional[Dict[str, callable]] = None,
+                 available_resources = {"cpu": 64, "gpu": 4, "memory": "128G"}):
         """
         Args:
             topics: Names of topics that are known for this queue
@@ -49,6 +57,10 @@ class ColmenaQueues:
                 mapping topics to threshold to use different threshold values
                 for different topics. None values in the mapping will exclude
                 ProxyStore use with that topic.
+                
+            available_task_capacity: the capacity of available task list, after
+                the capacity is reached, the task this flag prevent the agent submit 
+                task to the queue
         """
 
         # Store the list of topics and other simple options
@@ -57,6 +69,27 @@ class ColmenaQueues:
         self.keep_inputs = keep_inputs
         self.serialization_method = serialization_method
         self.role = QueueRole.ANY
+        
+        # available task for evosch, YXX
+        self.submit_time_out_event = Event()
+        self._add_task_flag = Event()
+        self._add_task_lock = Lock()
+        self._add_task_flag.set()
+        ## TODO Extract historical data to estimate running time, and register estimate_methods. by YXX
+        historical_data = evo_sch.historical_data(topics=topics, estimate_methods=estimate_methods, queue=self)
+        self._available_task_capacity = available_task_capacity
+        available_task = {}
+        for topic in self.topics:
+            available_task[topic] = []
+        self._available_tasks = evo_sch.available_task(available_task)
+        
+        self.evosch = evo_sch.evosch2(resources=available_resources, at=self._available_tasks, hist_data=historical_data)
+        
+        ## Result list temp for result object, can be quick search by task_id
+        self.result_list = {} # can be quick search by id
+        
+        ## temp test
+        # add historic data
 
         # Create {topic: proxystore_name} mapping
         self.proxystore_name = {t: None for t in self.topics}
@@ -144,8 +177,45 @@ class ColmenaQueues:
         role = QueueRole(role)
         self.role = role
 
+    ## origin get resule
+    # def get_result(self, topic: str = 'default', timeout: Optional[float] = None) -> Optional[Result]:
+    #     """Get a completed result
+
+    #     Args:
+    #         topic: Which topic of task to wait for
+    #         timeout: Timeout for waiting for a value
+    #     Returns:
+    #         (Result) Result from a computation
+    #     Raises:
+    #         TimeoutException if the timeout is met
+    #     """
+    #     self._check_role(QueueRole.CLIENT, 'get_result')
+
+    #     ## TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
+        
+    #     # Get a value
+    #     message = self._get_result(timeout=timeout, topic=topic)
+    #     logger.debug(f'Received value: {str(message)[:25]}')
+
+    #     # Parse the value and mark it as complete
+    #     result_obj = Result.parse_raw(message)
+    #     result_obj.time_deserialize_results = result_obj.deserialize()
+    #     result_obj.mark_result_received()
+
+    #     # Some logging
+    #     logger.info(f'Client received a {result_obj.method} result with topic {topic}')
+
+    #     # Update the list of active tasks
+    #     with self._active_lock:
+    #         self._active_tasks.discard(result_obj.task_id)
+    #         if len(self._active_tasks) == 0:
+    #             self._all_complete.set()
+
+    #     return result_obj
+
     def get_result(self, topic: str = 'default', timeout: Optional[float] = None) -> Optional[Result]:
         """Get a completed result
+        add evo_sch plugin
 
         Args:
             topic: Which topic of task to wait for
@@ -157,8 +227,6 @@ class ColmenaQueues:
         """
         self._check_role(QueueRole.CLIENT, 'get_result')
 
-        ## TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
-        
         # Get a value
         message = self._get_result(timeout=timeout, topic=topic)
         logger.debug(f'Received value: {str(message)[:25]}')
@@ -168,6 +236,11 @@ class ColmenaQueues:
         result_obj.time_deserialize_results = result_obj.deserialize()
         result_obj.mark_result_received()
 
+        ## TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
+        ## maybe just count resources here
+        # add hist data
+        # self.add_hist(topic=topic, task_id=result_obj.task_id, task_info=result_obj.task_info) # cant work now, we use hist save data 
+        
         # Some logging
         logger.info(f'Client received a {result_obj.method} result with topic {topic}')
 
@@ -178,7 +251,88 @@ class ColmenaQueues:
                 self._all_complete.set()
 
         return result_obj
+    
+    # def add_hist(self, topic: str, task_id: str, task_info: dict):
+    #     """add historical data to the queue
+    #         inputs data, running time
+    #     """
+    #     self.evosch.historical_data[topic][task_id] = task_info
+    #     pass
 
+    
+    # def send_inputs(self,
+    #                 *input_args: Any,
+    #                 method: str = None,
+    #                 input_kwargs: Optional[Dict[str, Any]] = None,
+    #                 keep_inputs: Optional[bool] = None,
+    #                 resources: Optional[Union[ResourceRequirements, dict]] = None,
+    #                 topic: str = 'default',
+    #                 task_info: Optional[Dict[str, Any]] = None) -> str:
+    #     """Send a task request
+
+    #     Args:
+    #         *input_args (Any): Positional arguments to a function
+    #         method (str): Name of the method to run. Optional
+    #         input_kwargs (dict): Any keyword arguments for the function being run
+    #         keep_inputs (bool): Whether to override the
+    #         topic (str): Topic for the queue, which sets the topic for the result
+    #         resources: Suggestions for how many resources to use for the task
+    #         task_info (dict): Any information used for task tracking
+    #     Returns:
+    #         Task ID
+    #     """
+    #     self._check_role(QueueRole.CLIENT, 'send_inputs')
+        
+    #     ## TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
+
+    #     # Make sure the queue topic exists
+    #     assert topic in self.topics, f'Unknown topic: {topic}. Known are: {", ".join(self.topics)}'
+
+    #     # Make fake kwargs, if needed
+    #     if input_kwargs is None:
+    #         input_kwargs = dict()
+
+    #     # Determine whether to override the default "keep_inputs"
+    #     _keep_inputs = self.keep_inputs
+    #     if keep_inputs is not None:
+    #         _keep_inputs = keep_inputs
+
+    #     # Gather ProxyStore info if we are using it with this topic
+    #     ps_name = self.proxystore_name[topic]
+    #     ps_threshold = self.proxystore_threshold[topic]
+    #     ps_kwargs = {}
+    #     if ps_name is not None and ps_threshold is not None:
+    #         store = proxystore.store.get_store(ps_name)
+    #         # proxystore_kwargs contains all the information we would need to
+    #         # reconnect to the ProxyStore backend on any worker
+    #         ps_kwargs.update({
+    #             'proxystore_name': ps_name,
+    #             'proxystore_threshold': ps_threshold,
+    #             'proxystore_config': store.config(),
+    #         })
+
+    #     # Create a new Result object
+    #     result = Result(
+    #         (input_args, input_kwargs),
+    #         method=method,
+    #         keep_inputs=_keep_inputs,
+    #         serialization_method=self.serialization_method,
+    #         task_info=task_info,
+    #         resources=resources or ResourceRequirements(),  # Takes either the user specified or a default
+    #         **ps_kwargs
+    #     )
+
+    #     # Push the serialized value to the task server
+    #     result.time_serialize_inputs, proxies = result.serialize()
+    #     self._send_request(result.json(exclude_none=True), topic)
+    #     logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
+
+    #     # Store the task ID in the active list
+    #     with self._active_lock:
+    #         self._active_tasks.add(result.task_id)
+    #         self._all_complete.clear()
+    #     return result.task_id
+    
     def send_inputs(self,
                     *input_args: Any,
                     method: str = None,
@@ -203,7 +357,8 @@ class ColmenaQueues:
         self._check_role(QueueRole.CLIENT, 'send_inputs')
         
         ## TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
-
+        # if the task capacity is full, wait for the evo_sch to trigger, and finish some task
+        self._add_task_flag.wait()
         # Make sure the queue topic exists
         assert topic in self.topics, f'Unknown topic: {topic}. Known are: {", ".join(self.topics)}'
 
@@ -231,6 +386,7 @@ class ColmenaQueues:
             })
 
         # Create a new Result object
+        # logger.info(f'input_args is {input_args}, input_kwargs is {input_kwargs}')
         result = Result(
             (input_args, input_kwargs),
             method=method,
@@ -240,17 +396,79 @@ class ColmenaQueues:
             resources=resources or ResourceRequirements(),  # Takes either the user specified or a default
             **ps_kwargs
         )
-
+        
+        ## add to available task list YXX, under this lock agent cant submit task
+        with self._add_task_lock:
+            self._available_tasks.add_task_id(task_name=topic, task_id=result.task_id)
+            logger.info(f'Client sent a {method} task with topic {topic}.')
+            self.result_list[result.task_id] = result
+            # detect the capacity
+            if self._available_tasks.get_total_nums() >= self._available_task_capacity:
+                logger.info(f'Client reach the capacity.')
+                self._add_task_flag.clear()
+            # judge condition and trigger evo_sch
+            self.trigger_evo_sch()
+        
         # Push the serialized value to the task server
-        result.time_serialize_inputs, proxies = result.serialize()
-        self._send_request(result.json(exclude_none=True), topic)
-        logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
+        # move this after the task is added to the available task list and decide by scheduler
+        # result.time_serialize_inputs, proxies = result.serialize()
+        # self._send_request(result.json(exclude_none=True), topic)
+        # logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
 
         # Store the task ID in the active list
         with self._active_lock:
             self._active_tasks.add(result.task_id)
             self._all_complete.clear()
         return result.task_id
+    
+    def trigger_submit_task(self,best_ind):
+        logger.info(f'Client trigger submit task, best_ind length is {len(best_ind.task_allocation)}')
+        while best_ind.task_allocation is not None:
+            task = best_ind.task_allocation[0]
+            for key, value in task['resources'].items():
+                if self.evosch.resources[key] < value:
+                    break # wait for resource
+                else:
+                    self.evosch.resources[key] -= value
+                    best_ind.task_allocation.pop(0)
+                    self.evosch.at.remove_task_id(task_name=task['name'], task_id=task['task_id'])
+                    result = self.result_list.pop(task['task_id'])
+                    result.inputs[1]['cpus'] = value #TODO need modify for multipul resources
+                    method = result.method
+                    topic = task['name']
+                    result.time_serialize_inputs, proxies = result.serialize()
+                    self._send_request(result.json(exclude_none=True), topic)
+                    logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
+    
+    def trigger_evo_sch(self):
+        """Conditions that trigger scheduling and submission of tasks
+
+        Args:
+            result (Result): _description_
+            topic (str, optional): _description_. Defaults to 'default'.
+        """
+        ## add condition here to trigger evo_sch
+        # condition 1: the task is submitted to the queue
+        # condition 2: the task capacity is full
+        # how to get the perferct timeming to trigger evo_sch and submit task
+        # while thinker stop submit task, add event and lock at task submitter
+        # while the best_ind is better than before(while each task submit and detect the best_ind)
+        # wait for a certain time, then trigger evo_sch
+        # Note: this sch is conflict with resource allocate, we need a resource controller to control the resource
+        if self._add_task_flag.is_set() is False:
+            # get ind and submit task on the sch order and resources
+            # drop submitted task and record resources
+            logger.info(f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}')
+            logger.info(f'result list length is {len(self.result_list)}')
+            self.evosch.population = self.evosch.generate_population(100)
+            logger.info(f'Client trigger evo_sch, population[0] is {self.evosch.population[0].task_allocation}')
+            best_ind = self.evosch.run_ga(10) # parameter may need modify
+            self.trigger_submit_task(best_ind)
+        if self._add_task_flag.is_set() is True:
+            if self.submit_time_out_event.is_set():
+                self.evosch.population = self.evosch.generate_population(100)
+                best_ind = self.evosch.run_ga(10) # parameter may need modify
+                self.trigger_submit_task(best_ind)
 
     def wait_until_done(self, timeout: Optional[float] = None):
         """Wait until all out-going tasks have completed
