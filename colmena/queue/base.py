@@ -84,6 +84,7 @@ class ColmenaQueues:
         self._available_tasks = evo_sch.available_task(available_task)
         
         self.evosch = evo_sch.evosch2(resources=available_resources, at=self._available_tasks, hist_data=historical_data)
+        self.best_ind = None
         
         ## Result list temp for result object, can be quick search by task_id
         self.result_list = {} # can be quick search by id
@@ -263,6 +264,12 @@ class ColmenaQueues:
         for key, value in result_obj.inputs[1].items():
             if key in ['cpu', 'gpu']:
                 self.evosch.resources[key]+=value
+        if self.best_ind.task_allocation:        
+            self.trigger_submit_task(self.best_ind)
+        else:
+            self._add_task_flag.set()
+            self.timer_trigger()
+            
         return result_obj
     
     # def add_hist(self, topic: str, task_id: str, task_info: dict):
@@ -483,16 +490,16 @@ class ColmenaQueues:
             logger.info(f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}')
             logger.info(f'result list length is {len(self.result_list)}')
             self.evosch.population = self.evosch.generate_population(100)
-            best_ind = self.evosch.run_ga(10) # parameter may need modify
-            self.trigger_submit_task(best_ind)
+            self.best_ind = self.evosch.run_ga(10) # parameter may need modify
+            self.trigger_submit_task(self.best_ind)
         if self._add_task_flag.is_set() is True:
         # if self.submit_time_out_event.is_set():
         #     self.submit_time_out_event.clear()
             logger.info(f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
             if self.evosch.resources['cpu']>=16:
                 self.evosch.population = self.evosch.generate_population(100)
-                best_ind = self.evosch.run_ga(10) # parameter may need modify
-                self.trigger_submit_task(best_ind)
+                self.best_ind = self.evosch.run_ga(10) # parameter may need modify
+                self.trigger_submit_task(self.best_ind)
 
     def wait_until_done(self, timeout: Optional[float] = None):
         """Wait until all out-going tasks have completed
