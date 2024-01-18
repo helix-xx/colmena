@@ -93,10 +93,10 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
     while not thinker.done.is_set():
         # Wait until resources are free or thinker.done is set
         ## YXX drop resource counter here
-        # acq_success = thinker.rec.acquire(task_type, n_slots, cancel_if=thinker.done)
-        # if acq_success:
+        acq_success = thinker.rec.acquire(task_type, n_slots, cancel_if=thinker.done)
+        if acq_success:
         ## add timer, if time out, that means no more task to submit, trigger evoscheduler
-        if True:
+        # if True:
             # if no task to submit in 1 second, trigger evoscheduler, we move timer in sendinputs as a watch dog, thus we dont consifer all agnet
             # timer = threading.Timer(3, lambda: timeout_callback(thinker)) 
             thinker.logger.info(f'Acquired {n_slots} execution slots of type {task_type}')
