@@ -39,7 +39,7 @@ class ColmenaQueues:
                  keep_inputs: bool = True,
                  proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
                  proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
-                 available_task_capacity: Optional[int] = 110,
+                 available_task_capacity: Optional[int] = 16,
                  estimate_methods: Optional[Dict[str, callable]] = None,
                  available_resources = {"cpu": 64, "gpu": 4, "memory": "128G"}):
         """
@@ -423,9 +423,9 @@ class ColmenaQueues:
             logger.info(f'Client sent a {method} task with topic {topic}.')
             self.result_list[result.task_id] = result
             # detect the capacity
-            # if self._available_tasks.get_total_nums() >= self._available_task_capacity:
-                # logger.info(f'Client reach the capacity.')
-                # self._add_task_flag.clear() # TODO for now we disable it to run the test
+            if self._available_tasks.get_total_nums() >= self._available_task_capacity:
+                logger.info(f'Client reach the capacity.')
+                self._add_task_flag.clear() # TODO for now we disable it to run the test
             # judge condition and trigger evo_sch
             # self.trigger_evo_sch()
         self.timer_trigger()
