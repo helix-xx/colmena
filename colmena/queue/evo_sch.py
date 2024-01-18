@@ -14,10 +14,6 @@ from typing import Collection, Dict, Any, Optional, ClassVar, Union, List
 from copy import deepcopy
 import json
 from functools import partial, update_wrapper
-from anyio import current_time
-from matplotlib.style import available
-from moldesign import score
-from networkx import could_be_isomorphic
 import numpy as np
 import time
 import pickle
@@ -28,7 +24,7 @@ import sys
 import heapq
 from dataclasses import dataclass, field, asdict, is_dataclass
 
-sys.path.append(r"/home/yxx/work/project/colmena/multisite_/")
+sys.path.append(r"/home/lizz_lab/cse30019698/project/colmena/multisite_/")
 from my_util.data_structure import *
 
 logger = logging.getLogger(__name__)
@@ -124,8 +120,8 @@ class available_task(SingletonClass):
                 # logging.warning(f"task id {task_id} not in task name {task_name}")
                 continue
             self.task_ids[task_name].remove(i)
-            if len(self.task_ids[task_name]) == 0:
-                self.task_ids.pop(task_name)
+            # if len(self.task_ids[task_name]) == 0:
+            #     self.task_ids.pop(task_name)
         # if len(self.task_ids[task_name]) == 0:
         #     # print type
         #     print(type(self.task_names))
@@ -206,6 +202,10 @@ class evosch2:
         self.at = at # available task
         # self.population = self.generate_population(population_size)
         self.population = []
+        
+        ## add for restore resources
+        # self.current_time # current running time for compute when the resources back to pool again
+        # self.restore_resources = {} # {'resources':{'cpu':3,'gpu':0}, 'restore_time': 100}
     
     ## TODO estimate runtime background and generate new individual
     
@@ -297,9 +297,11 @@ class evosch2:
                     break
 
             if available_cpu < task['resources']['cpu']:
+                # skip current task
                 raise ValueError("Not enough CPUs for all tasks")
-
-            # 开始新任务
+                # logger.info("Not enough CPUs for all tasks")
+            
+            # start a new one
             available_cpu -= task['resources']['cpu']
             start_time = current_time
             # finish_time = current_time + self.estimate_simulation_time(task, task['resources']['cpu'])
@@ -360,25 +362,26 @@ class evosch2:
         task_nums = self.at.get_task_nums()
         all_tasks = self.at.get_all()
         population = []
-        for _ in range(population_size):
-            ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
-            
-            task_queue = []
-            for name, ids in all_tasks.items():
-                for task_id in ids:
-                    new_task = {
-                        "name":name,
-                        "task_id": task_id,
-                        "resources":{
-                            "cpu": random.randint(1,16)
-                            # "cpu": 1
+        if self.resources['cpu']>16:
+            for _ in range(population_size):
+                ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
+                
+                task_queue = []
+                for name, ids in all_tasks.items():
+                    for task_id in ids:
+                        new_task = {
+                            "name":name,
+                            "task_id": task_id,
+                            "resources":{
+                                "cpu": random.randint(1,16)
+                                # "cpu": 1
+                            }
                         }
-                    }
-                    task_queue.append(new_task)
-            random.shuffle(task_queue)
-        
-            ind.task_allocation = task_queue
-            population.append(ind)
+                        task_queue.append(new_task)
+                random.shuffle(task_queue)
+            
+                ind.task_allocation = task_queue
+                population.append(ind)
             
         for _ in range(population_size):
             ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))

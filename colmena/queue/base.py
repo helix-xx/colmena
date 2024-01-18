@@ -39,7 +39,7 @@ class ColmenaQueues:
                  keep_inputs: bool = True,
                  proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
                  proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
-                 available_task_capacity: Optional[int] = 100,
+                 available_task_capacity: Optional[int] = 110,
                  estimate_methods: Optional[Dict[str, callable]] = None,
                  available_resources = {"cpu": 64, "gpu": 4, "memory": "128G"}):
         """
@@ -249,7 +249,11 @@ class ColmenaQueues:
             self._active_tasks.discard(result_obj.task_id)
             if len(self._active_tasks) == 0:
                 self._all_complete.set()
-
+                
+        # resume resources, key should in inmutable list
+        for key, value in result_obj.inputs[1]:
+            if key in ['cpu', 'gpu']:
+                self.evosch.resources[key]+=value
         return result_obj
     
     # def add_hist(self, topic: str, task_id: str, task_info: dict):
@@ -403,9 +407,9 @@ class ColmenaQueues:
             logger.info(f'Client sent a {method} task with topic {topic}.')
             self.result_list[result.task_id] = result
             # detect the capacity
-            if self._available_tasks.get_total_nums() >= self._available_task_capacity:
-                logger.info(f'Client reach the capacity.')
-                self._add_task_flag.clear()
+            # if self._available_tasks.get_total_nums() >= self._available_task_capacity:
+                # logger.info(f'Client reach the capacity.')
+                # self._add_task_flag.clear() # TODO for now we disable it to run the test
             # judge condition and trigger evo_sch
             self.trigger_evo_sch()
         
@@ -422,18 +426,25 @@ class ColmenaQueues:
         return result.task_id
     
     def trigger_submit_task(self,best_ind):
-        logger.info(f'Client trigger submit task, best_ind length is {len(best_ind.task_allocation)}')
-        while best_ind.task_allocation is not None:
+        logger.info(f'Client trigger submit task, available task length is {len(best_ind.task_allocation)}')
+        not_enough_resource = False
+        #TODO need modify for multipul resources
+        while len(best_ind.task_allocation) > 0:
             task = best_ind.task_allocation[0]
+            if not_enough_resource:
+                break
             for key, value in task['resources'].items():
                 if self.evosch.resources[key] < value:
+                    logger.info(f'Client trigger submit task, resource is not enough, wait for resource')
+                    not_enough_resource = True
                     break # wait for resource
                 else:
+                    logger.info(f'submit task to queue, remain resource is {self.evosch.resources}, consume resource is {task["resources"]}')
                     self.evosch.resources[key] -= value
                     best_ind.task_allocation.pop(0)
                     self.evosch.at.remove_task_id(task_name=task['name'], task_id=task['task_id'])
                     result = self.result_list.pop(task['task_id'])
-                    result.inputs[1]['cpus'] = value #TODO need modify for multipul resources
+                    result.inputs[1]['cpu'] = value 
                     method = result.method
                     topic = task['name']
                     result.time_serialize_inputs, proxies = result.serialize()
@@ -461,14 +472,16 @@ class ColmenaQueues:
             logger.info(f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}')
             logger.info(f'result list length is {len(self.result_list)}')
             self.evosch.population = self.evosch.generate_population(100)
-            logger.info(f'Client trigger evo_sch, population[0] is {self.evosch.population[0].task_allocation}')
             best_ind = self.evosch.run_ga(10) # parameter may need modify
             self.trigger_submit_task(best_ind)
         if self._add_task_flag.is_set() is True:
             if self.submit_time_out_event.is_set():
-                self.evosch.population = self.evosch.generate_population(100)
-                best_ind = self.evosch.run_ga(10) # parameter may need modify
-                self.trigger_submit_task(best_ind)
+                self.submit_time_out_event.clear()
+                logger.info(f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
+                if self.evosch.resources['cpu']>=16:
+                    self.evosch.population = self.evosch.generate_population(100)
+                    best_ind = self.evosch.run_ga(10) # parameter may need modify
+                    self.trigger_submit_task(best_ind)
 
     def wait_until_done(self, timeout: Optional[float] = None):
         """Wait until all out-going tasks have completed
