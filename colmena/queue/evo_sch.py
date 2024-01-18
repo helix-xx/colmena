@@ -24,7 +24,7 @@ import sys
 import heapq
 from dataclasses import dataclass, field, asdict, is_dataclass
 
-sys.path.append(r"/home/lizz_lab/cse30019698/project/colmena/multisite_/")
+sys.path.append(r"../../../../colmena/multisite_/")
 from my_util.data_structure import *
 
 logger = logging.getLogger(__name__)

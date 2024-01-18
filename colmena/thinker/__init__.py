@@ -97,7 +97,7 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
         # if acq_success:
         ## add timer, if time out, that means no more task to submit, trigger evoscheduler
         if True:
-            timer = threading.Timer(3, timeout_callback(thinker)) # if no task to submit in 1 second, trigger evoscheduler, TODO wait time 1 is a parameter
+            timer = threading.Timer(10, lambda: timeout_callback(thinker)) # if no task to submit in 1 second, trigger evoscheduler, TODO wait time 1 is a parameter
             thinker.logger.info(f'Acquired {n_slots} execution slots of type {task_type}')
             start_time = perf_counter()
             try:

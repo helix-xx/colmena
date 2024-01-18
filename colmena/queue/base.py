@@ -251,7 +251,7 @@ class ColmenaQueues:
                 self._all_complete.set()
                 
         # resume resources, key should in inmutable list
-        for key, value in result_obj.inputs[1]:
+        for key, value in result_obj.inputs[1].items():
             if key in ['cpu', 'gpu']:
                 self.evosch.resources[key]+=value
         return result_obj
