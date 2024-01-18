@@ -476,6 +476,8 @@ class ColmenaQueues:
             result (Result): _description_
             topic (str, optional): _description_. Defaults to 'default'.
         """
+        if self._available_tasks.get_total_nums() ==0:
+            return
         ## add condition here to trigger evo_sch
         # condition 1: the task is submitted to the queue
         # condition 2: the task capacity is full
