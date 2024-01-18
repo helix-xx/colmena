@@ -86,8 +86,8 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
         n_slots = getattr(thinker, n_slots)
         
     # submit_time_out_event = Event()
-    def timeout_callback(thinker: 'BaseThinker'):
-        thinker.queues.submit_time_out_event.set()
+    # def timeout_callback(thinker: 'BaseThinker'):
+    #     thinker.queues.submit_time_out_event.set()
         # print("Function timed out")
 
     while not thinker.done.is_set():
@@ -97,14 +97,16 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
         # if acq_success:
         ## add timer, if time out, that means no more task to submit, trigger evoscheduler
         if True:
-            timer = threading.Timer(10, lambda: timeout_callback(thinker)) # if no task to submit in 1 second, trigger evoscheduler, TODO wait time 1 is a parameter
+            # if no task to submit in 1 second, trigger evoscheduler, we move timer in sendinputs as a watch dog, thus we dont consifer all agnet
+            # timer = threading.Timer(3, lambda: timeout_callback(thinker)) 
             thinker.logger.info(f'Acquired {n_slots} execution slots of type {task_type}')
             start_time = perf_counter()
             try:
-                timer.start()
+                # timer.start()
                 process_func(thinker)
             finally:
-                timer.cancel()
+                # timer.cancel()
+                pass
             thinker.logger.info(f'Finished submitting new work. Runtime: {perf_counter() - start_time:.4e}s')
             
 

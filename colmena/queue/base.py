@@ -5,6 +5,7 @@ import resource
 import warnings
 from abc import abstractmethod
 from enum import Enum
+import threading
 from threading import Lock, Event
 from typing import Callable, Optional, Tuple, Any, Collection, Union, Dict, Set
 import logging
@@ -25,7 +26,6 @@ class QueueRole(str, Enum):
     SERVER = 'server'
     CLIENT = 'client'
     
-
 class ColmenaQueues:
     """Base class for a queue used in Colmena.
 
@@ -88,9 +88,18 @@ class ColmenaQueues:
         ## Result list temp for result object, can be quick search by task_id
         self.result_list = {} # can be quick search by id
         
-        ## temp test
-        # add historic data
-
+        ## timer for trigger evo_sch
+        timer = None
+        def reset_timer():
+            nonlocal timer
+            # 重置计时器，取消之前的计时器并启动新的计时器
+            if timer:
+                timer.cancel()
+            timeout=3
+            timer = threading.Timer(timeout, self.trigger_evo_sch)
+            timer.start()
+        self.timer_trigger = reset_timer
+        
         # Create {topic: proxystore_name} mapping
         self.proxystore_name = {t: None for t in self.topics}
         if isinstance(proxystore_name, str):
@@ -411,7 +420,9 @@ class ColmenaQueues:
                 # logger.info(f'Client reach the capacity.')
                 # self._add_task_flag.clear() # TODO for now we disable it to run the test
             # judge condition and trigger evo_sch
-            self.trigger_evo_sch()
+            # self.trigger_evo_sch()
+        self.timer_trigger()
+        
         
         # Push the serialized value to the task server
         # move this after the task is added to the available task list and decide by scheduler
@@ -475,13 +486,13 @@ class ColmenaQueues:
             best_ind = self.evosch.run_ga(10) # parameter may need modify
             self.trigger_submit_task(best_ind)
         if self._add_task_flag.is_set() is True:
-            if self.submit_time_out_event.is_set():
-                self.submit_time_out_event.clear()
-                logger.info(f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
-                if self.evosch.resources['cpu']>=16:
-                    self.evosch.population = self.evosch.generate_population(100)
-                    best_ind = self.evosch.run_ga(10) # parameter may need modify
-                    self.trigger_submit_task(best_ind)
+        # if self.submit_time_out_event.is_set():
+        #     self.submit_time_out_event.clear()
+            logger.info(f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
+            if self.evosch.resources['cpu']>=16:
+                self.evosch.population = self.evosch.generate_population(100)
+                best_ind = self.evosch.run_ga(10) # parameter may need modify
+                self.trigger_submit_task(best_ind)
 
     def wait_until_done(self, timeout: Optional[float] = None):
         """Wait until all out-going tasks have completed
