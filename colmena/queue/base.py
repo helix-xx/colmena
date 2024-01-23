@@ -491,13 +491,15 @@ class ColmenaQueues:
             # drop submitted task and record resources
             logger.info(f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}')
             logger.info(f'result list length is {len(self.result_list)}')
-            self.evosch.population = self.evosch.generate_population(100)
-            self.best_ind = self.evosch.run_ga(10) # parameter may need modify
-            self.trigger_submit_task(self.best_ind)
+            if self.evosch.resources['cpu']>=16:
+                self.evosch.population = self.evosch.generate_population(100)
+                self.best_ind = self.evosch.run_ga(10) # parameter may need modify
+                self.trigger_submit_task(self.best_ind)
         if self._add_task_flag.is_set() is True:
         # if self.submit_time_out_event.is_set():
         #     self.submit_time_out_event.clear()
             logger.info(f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
+            logger.info(f'result list length is {len(self.result_list)}')
             if self.evosch.resources['cpu']>=16:
                 self.evosch.population = self.evosch.generate_population(100)
                 self.best_ind = self.evosch.run_ga(10) # parameter may need modify
