@@ -45,6 +45,7 @@ class RedisQueues(ColmenaQueues):
                  serialization_method: Union[str, SerializationMethod] = SerializationMethod.PICKLE,
                  keep_inputs: bool = True,
                  proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
+                 estimate_methods: Optional[Dict[str, callable]] = None,
                  proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None):
         """
         Args:
