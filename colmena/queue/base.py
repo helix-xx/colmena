@@ -455,23 +455,26 @@ class ColmenaQueues:
             task = best_ind.task_allocation[0]
             if not_enough_resource:
                 break
-            for key, value in task['resources'].items():
-                if self.evosch.resources[key] < value:
-                    logger.info(f'Client trigger submit task, resource is not enough, wait for resource')
-                    not_enough_resource = True
-                    break # wait for resource
-                else:
-                    logger.info(f'submit task to queue, remain resource is {self.evosch.resources}, consume resource is {task["resources"]}')
-                    self.evosch.resources[key] -= value
-                    best_ind.task_allocation.pop(0)
-                    self.evosch.at.remove_task_id(task_name=task['name'], task_id=task['task_id'])
-                    result = self.result_list.pop(task['task_id'])
-                    result.inputs[1]['cpu'] = value 
-                    method = result.method
-                    topic = task['name']
-                    result.time_serialize_inputs, proxies = result.serialize()
-                    self._send_request(result.json(exclude_none=True), topic)
-                    logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
+            # for key, value in task['resources'].items():
+            key = 'cpu'
+            value = task['resources']['cpu']
+            if self.evosch.resources[key] < value:
+                logger.info(f'Client trigger submit task, resource is not enough, wait for resource')
+                not_enough_resource = True
+                # break # wait for resource
+            else:
+                # logger.info(f'submit task to queue, remain resource is {self.evosch.resources}, consume resource is {task["resources"]}')
+                logger.info(f'submit task to queue, remain resource is {self.evosch.resources}, consume resource is {key,value}')
+                self.evosch.resources[key] -= value
+                best_ind.task_allocation.pop(0)
+                self.evosch.at.remove_task_id(task_name=task['name'], task_id=task['task_id'])
+                result = self.result_list.pop(task['task_id'])
+                result.inputs[1]['cpu'] = value 
+                method = result.method
+                topic = task['name']
+                result.time_serialize_inputs, proxies = result.serialize()
+                self._send_request(result.json(exclude_none=True), topic)
+                logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
     
     def trigger_evo_sch(self):
         """Conditions that trigger scheduling and submission of tasks
