@@ -261,11 +261,13 @@ class ColmenaQueues:
                 self._all_complete.set()
                 
         # resume resources, key should in inmutable list
+        logger.info(f'Client received a {result_obj.method} result with topic {topic}, consume resource is {result_obj.inputs[1]}')
         for key, value in result_obj.inputs[1].items():
             if key in ['cpu', 'gpu']:
                 self.evosch.resources[key]+=value
         
         logger.info(f'Client received a {result_obj.method} result with topic {topic}, restore resources:remain resource is {self.evosch.resources}')
+        
         if self.best_ind.task_allocation:        
             self.trigger_submit_task(self.best_ind)
         else:
