@@ -470,6 +470,7 @@ class ColmenaQueues:
                 self.evosch.at.remove_task_id(task_name=task['name'], task_id=task['task_id'])
                 result = self.result_list.pop(task['task_id'])
                 result.inputs[1]['cpu'] = value 
+                logger.info(f'reslut.input[1] is: {result.inputs[1]}')
                 method = result.method
                 topic = task['name']
                 result.time_serialize_inputs, proxies = result.serialize()
