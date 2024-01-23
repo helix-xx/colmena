@@ -252,7 +252,7 @@ class ColmenaQueues:
         # self.add_hist(topic=topic, task_id=result_obj.task_id, task_info=result_obj.task_info) # cant work now, we use hist save data 
         
         # Some logging
-        logger.info(f'Client received a {result_obj.method} result with topic {topic}')
+        # logger.info(f'Client received a {result_obj.method} result with topic {topic}')
 
         # Update the list of active tasks
         with self._active_lock:
@@ -264,6 +264,8 @@ class ColmenaQueues:
         for key, value in result_obj.inputs[1].items():
             if key in ['cpu', 'gpu']:
                 self.evosch.resources[key]+=value
+        
+        logger.info(f'Client received a {result_obj.method} result with topic {topic}, restore resources:remain resource is {self.evosch.resources}')
         if self.best_ind.task_allocation:        
             self.trigger_submit_task(self.best_ind)
         else:
@@ -495,6 +497,8 @@ class ColmenaQueues:
                 self.evosch.population = self.evosch.generate_population(100)
                 self.best_ind = self.evosch.run_ga(10) # parameter may need modify
                 self.trigger_submit_task(self.best_ind)
+            else:
+                logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
         if self._add_task_flag.is_set() is True:
         # if self.submit_time_out_event.is_set():
         #     self.submit_time_out_event.clear()
@@ -504,6 +508,8 @@ class ColmenaQueues:
                 self.evosch.population = self.evosch.generate_population(100)
                 self.best_ind = self.evosch.run_ga(10) # parameter may need modify
                 self.trigger_submit_task(self.best_ind)
+            else:
+                logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
 
     def wait_until_done(self, timeout: Optional[float] = None):
         """Wait until all out-going tasks have completed
