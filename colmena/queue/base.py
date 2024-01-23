@@ -261,7 +261,7 @@ class ColmenaQueues:
                 self._all_complete.set()
                 
         # resume resources, key should in inmutable list
-        logger.info(f'Client received a {result_obj.method} result with topic {topic}, consume resource is {result_obj.inputs}')
+        logger.info(f'Client received a {result_obj.method} result with topic {topic}, consume resource is {result_obj.inputs[1]}')
         for key, value in result_obj.inputs[1].items():
             if key in ['cpu', 'gpu']:
                 self.evosch.resources[key]+=value
