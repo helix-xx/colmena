@@ -233,7 +233,7 @@ class ColmenaQueues:
             if key in ['cpu', 'gpu']:
                 self.evosch.resources[key]+=value
         for task in self.evosch.running_task:
-            if task.task_id == result_obj.task_id:
+            if task['task_id'] == result_obj.task_id:
                 self.evosch.running_task.remove(task)
                 break
         
@@ -370,8 +370,8 @@ class ColmenaQueues:
                 best_ind.predict_run_seq.pop(0)
                 self.evosch.at.remove_task_id(task_name=task['name'], task_id=task['task_id'])
                 # refresh the predict task information
-                predict_task.start_time = time.time()
-                predict_task.finish_time = predict_task.start_time + predict_task.total_runtime
+                predict_task['start_time'] = time.time()
+                predict_task['finish_time'] = predict_task['start_time'] + predict_task['toatal_runtime']
                 self.evosch.running_task.append(predict_task)
                 # pop the task from available task list
                 result = self.result_list.pop(task['task_id'])
