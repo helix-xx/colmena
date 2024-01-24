@@ -1,4 +1,5 @@
 """Base classes for queues and related functions"""
+from functools import total_ordering
 import queue
 import re
 import resource
@@ -11,6 +12,7 @@ from typing import Callable, Optional, Tuple, Any, Collection, Union, Dict, Set
 import logging
 from attr import dataclass
 from numpy import tri
+import time
 
 import proxystore.store
 
@@ -83,7 +85,7 @@ class ColmenaQueues:
             available_task[topic] = []
         self._available_tasks = evo_sch.available_task(available_task)
         
-        self.evosch = evo_sch.evosch2(resources=available_resources, at=self._available_tasks, hist_data=historical_data)
+        self.evosch:evo_sch.evosch2 = evo_sch.evosch2(resources=available_resources, at=self._available_tasks, hist_data=historical_data)
         self.best_ind = None
         
         ## Result list temp for result object, can be quick search by task_id
@@ -187,41 +189,6 @@ class ColmenaQueues:
         role = QueueRole(role)
         self.role = role
 
-    ## origin get resule
-    # def get_result(self, topic: str = 'default', timeout: Optional[float] = None) -> Optional[Result]:
-    #     """Get a completed result
-
-    #     Args:
-    #         topic: Which topic of task to wait for
-    #         timeout: Timeout for waiting for a value
-    #     Returns:
-    #         (Result) Result from a computation
-    #     Raises:
-    #         TimeoutException if the timeout is met
-    #     """
-    #     self._check_role(QueueRole.CLIENT, 'get_result')
-
-    #     ## TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
-        
-    #     # Get a value
-    #     message = self._get_result(timeout=timeout, topic=topic)
-    #     logger.debug(f'Received value: {str(message)[:25]}')
-
-    #     # Parse the value and mark it as complete
-    #     result_obj = Result.parse_raw(message)
-    #     result_obj.time_deserialize_results = result_obj.deserialize()
-    #     result_obj.mark_result_received()
-
-    #     # Some logging
-    #     logger.info(f'Client received a {result_obj.method} result with topic {topic}')
-
-    #     # Update the list of active tasks
-    #     with self._active_lock:
-    #         self._active_tasks.discard(result_obj.task_id)
-    #         if len(self._active_tasks) == 0:
-    #             self._all_complete.set()
-
-    #     return result_obj
 
     def get_result(self, topic: str = 'default', timeout: Optional[float] = None) -> Optional[Result]:
         """Get a completed result
@@ -265,6 +232,10 @@ class ColmenaQueues:
         for key, value in result_obj.inputs[1].items():
             if key in ['cpu', 'gpu']:
                 self.evosch.resources[key]+=value
+        for task in self.evosch.running_task:
+            if task.task_id == result_obj.task_id:
+                self.evosch.running_task.remove(task)
+                break
         
         logger.info(f'Client received a {result_obj.method} result with topic {topic}, restore resources:remain resource is {self.evosch.resources}')
         
@@ -284,79 +255,7 @@ class ColmenaQueues:
     #     pass
 
     
-    # def send_inputs(self,
-    #                 *input_args: Any,
-    #                 method: str = None,
-    #                 input_kwargs: Optional[Dict[str, Any]] = None,
-    #                 keep_inputs: Optional[bool] = None,
-    #                 resources: Optional[Union[ResourceRequirements, dict]] = None,
-    #                 topic: str = 'default',
-    #                 task_info: Optional[Dict[str, Any]] = None) -> str:
-    #     """Send a task request
 
-    #     Args:
-    #         *input_args (Any): Positional arguments to a function
-    #         method (str): Name of the method to run. Optional
-    #         input_kwargs (dict): Any keyword arguments for the function being run
-    #         keep_inputs (bool): Whether to override the
-    #         topic (str): Topic for the queue, which sets the topic for the result
-    #         resources: Suggestions for how many resources to use for the task
-    #         task_info (dict): Any information used for task tracking
-    #     Returns:
-    #         Task ID
-    #     """
-    #     self._check_role(QueueRole.CLIENT, 'send_inputs')
-        
-    #     ## TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
-
-    #     # Make sure the queue topic exists
-    #     assert topic in self.topics, f'Unknown topic: {topic}. Known are: {", ".join(self.topics)}'
-
-    #     # Make fake kwargs, if needed
-    #     if input_kwargs is None:
-    #         input_kwargs = dict()
-
-    #     # Determine whether to override the default "keep_inputs"
-    #     _keep_inputs = self.keep_inputs
-    #     if keep_inputs is not None:
-    #         _keep_inputs = keep_inputs
-
-    #     # Gather ProxyStore info if we are using it with this topic
-    #     ps_name = self.proxystore_name[topic]
-    #     ps_threshold = self.proxystore_threshold[topic]
-    #     ps_kwargs = {}
-    #     if ps_name is not None and ps_threshold is not None:
-    #         store = proxystore.store.get_store(ps_name)
-    #         # proxystore_kwargs contains all the information we would need to
-    #         # reconnect to the ProxyStore backend on any worker
-    #         ps_kwargs.update({
-    #             'proxystore_name': ps_name,
-    #             'proxystore_threshold': ps_threshold,
-    #             'proxystore_config': store.config(),
-    #         })
-
-    #     # Create a new Result object
-    #     result = Result(
-    #         (input_args, input_kwargs),
-    #         method=method,
-    #         keep_inputs=_keep_inputs,
-    #         serialization_method=self.serialization_method,
-    #         task_info=task_info,
-    #         resources=resources or ResourceRequirements(),  # Takes either the user specified or a default
-    #         **ps_kwargs
-    #     )
-
-    #     # Push the serialized value to the task server
-    #     result.time_serialize_inputs, proxies = result.serialize()
-    #     self._send_request(result.json(exclude_none=True), topic)
-    #     logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
-
-    #     # Store the task ID in the active list
-    #     with self._active_lock:
-    #         self._active_tasks.add(result.task_id)
-    #         self._all_complete.clear()
-    #     return result.task_id
-    
     def send_inputs(self,
                     *input_args: Any,
                     method: str = None,
@@ -447,12 +346,13 @@ class ColmenaQueues:
             self._all_complete.clear()
         return result.task_id
     
-    def trigger_submit_task(self,best_ind):
+    def trigger_submit_task(self,best_ind: evo_sch.individual):
         logger.info(f'Client trigger submit task, available task length is {len(best_ind.task_allocation)}')
         not_enough_resource = False
         #TODO need modify for multipul resources
         while len(best_ind.task_allocation) > 0:
             task = best_ind.task_allocation[0]
+            predict_task = best_ind.predict_run_seq[0]
             if not_enough_resource:
                 break
             # for key, value in task['resources'].items():
@@ -467,10 +367,16 @@ class ColmenaQueues:
                 logger.info(f'submit task to queue, remain resource is {self.evosch.resources}, consume resource is {key,value}')
                 self.evosch.resources[key] -= value
                 best_ind.task_allocation.pop(0)
+                best_ind.predict_run_seq.pop(0)
                 self.evosch.at.remove_task_id(task_name=task['name'], task_id=task['task_id'])
+                # refresh the predict task information
+                predict_task.start_time = time.time()
+                predict_task.finish_time = predict_task.start_time + predict_task.total_runtime
+                self.evosch.running_task.append(predict_task)
+                # pop the task from available task list
                 result = self.result_list.pop(task['task_id'])
                 result.inputs[1]['cpu'] = value 
-                logger.info(f'result.inputs[1] is: {result.inputs[1]}')
+                logger.info(f'Resources: result.inputs[1] is: {result.inputs[1]}')
                 method = result.method
                 topic = task['name']
                 result.time_serialize_inputs, proxies = result.serialize()

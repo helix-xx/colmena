@@ -197,14 +197,15 @@ class evosch2:
     def __init__(self,  resources=None,at:available_task=None, hist_data=historical_data, population_size=10):
         self.his_population = set()
         # self.task_queue_audit = task_queue_audit ## this is hist data, not need it in evosch2, introduce in colmena queue while trigger schduling
-        self.resources:dict = resources
+        self.resources:dict = resources # this is for management
+        self.resources_evo:dict = resources # this is for evo sch
         self.hist_data = hist_data
         self.at = at # available task
         # self.population = self.generate_population(population_size)
         self.population = []
         
         ## log the running task for track the resource and time
-        self.running_task:list[dict[str, int]] = [] # {'task_id': 1, 'name': 'simulate', 'start_time': 100, 'finish_time': 200, resources:{'cpu':3,'gpu':0}}
+        self.running_task:list[dict[str, int]] = [] # {'task_id': 1, 'name': 'simulate', 'start_time': 100, 'finish_time': 200, 'total_time': 100, resources:{'cpu':3,'gpu':0}}
         self.current_time = 0 # current running time for compute  while trigger evo_scheduler
         ## add for restore resources
         # self.current_time # current running time for compute when the resources back to pool again
@@ -236,9 +237,8 @@ class evosch2:
     #     # estimate time should get hist data in colmena
     #     # estimate function should given by user and register in colmena
     #     pass
-    
     def calculate_completion_time(self, ind:individual):
-        available_cpu = self.resources['cpu']
+        available_cpu = self.resources_evo['cpu']
         current_time = 0
         ongoing_task = []
         for task in ind.task_allocation:
@@ -268,7 +268,7 @@ class evosch2:
         return current_time
     
     def calculate_completion_time_record(self, ind):
-        available_cpu = self.resources['cpu']
+        available_cpu = self.resources_evo['cpu']
         current_time = 0
         ongoing_task = []
         running_seq = []  # 记录任务执行的顺序和时间
@@ -337,10 +337,24 @@ class evosch2:
         return current_time
     
     def calculate_completion_time_record_with_running_task(self, ind):
-        available_cpu = self.resources['cpu']
-        current_time = 0
+        # TODO need change for multinode and heterogenous
+        available_cpu = self.resources_evo['cpu']
+        current_time = time.time()
         ongoing_task = []
         running_seq = []  # 记录任务执行的顺序和时间
+        
+        ## consider already submit task
+        if self.running_task:
+            for task in self.running_task:
+                heapq.heappush(ongoing_task, (task['finish_time'], task['resources']['cpu'], task['task_id'], task['name']))
+                available_cpu -= task['resources']['cpu']
+                running_seq.append({
+                    'name': task['name'],
+                    'task_id': task['task_id'],
+                    'start_time': task['start_time'],
+                    'finish_time': task['finish_time'],  # 将在任务完成时更新
+                    'total_runtime': task['total_runtime']  # 将在任务完成时更新
+                })
 
         for task in ind.task_allocation:
             # 检查是否有任务已经完成
@@ -386,7 +400,8 @@ class evosch2:
                 'task_id': task['task_id'],
                 'start_time': start_time,
                 'finish_time': None,  # 将在任务完成时更新
-                'total_runtime': None  # 将在任务完成时更新
+                'total_runtime': None,  # 将在任务完成时更新
+                'resources': task['resources']
             })
 
         # 清空剩余的任务并记录完成时间
@@ -434,7 +449,7 @@ class evosch2:
         task_nums = self.at.get_task_nums()
         all_tasks = self.at.get_all()
         population = []
-        if self.resources['cpu']>16:
+        if self.resources_evo['cpu']>16:
             for _ in range(population_size):
                 ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
                 
@@ -562,7 +577,7 @@ class evosch2:
         
         index = self.list_dict_index(ind.task_allocation,task)
         new_alloc = random.choice([1,2,3,4,5]) + ind.task_allocation[index]['resources']['cpu']
-        if new_alloc <= self.resources['cpu']//2:
+        if new_alloc <= self.resources_evo['cpu']//2:
             ind.task_allocation[index]['resources']['cpu'] = new_alloc
         
     def opt2(self, ind:individual):
