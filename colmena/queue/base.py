@@ -501,7 +501,7 @@ class ColmenaQueues:
             logger.info(f'result list length is {len(self.result_list)}')
             if self.evosch.resources['cpu']>=16:
                 self.evosch.population = self.evosch.generate_population(100)
-                self.best_ind = self.evosch.run_ga(10) # parameter may need modify
+                self.best_ind = self.evosch.run_ga(100) # parameter may need modify
                 self.trigger_submit_task(self.best_ind)
             else:
                 logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
@@ -512,7 +512,7 @@ class ColmenaQueues:
             logger.info(f'result list length is {len(self.result_list)}')
             if self.evosch.resources['cpu']>=16:
                 self.evosch.population = self.evosch.generate_population(100)
-                self.best_ind = self.evosch.run_ga(10) # parameter may need modify
+                self.best_ind = self.evosch.run_ga(100) # parameter may need modify
                 self.trigger_submit_task(self.best_ind)
             else:
                 logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')

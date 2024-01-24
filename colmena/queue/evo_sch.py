@@ -203,6 +203,9 @@ class evosch2:
         # self.population = self.generate_population(population_size)
         self.population = []
         
+        ## log the running task for track the resource and time
+        self.running_task:list[dict[str, int]] = [] # {'task_id': 1, 'name': 'simulate', 'start_time': 100, 'finish_time': 200, resources:{'cpu':3,'gpu':0}}
+        self.current_time = 0 # current running time for compute  while trigger evo_scheduler
         ## add for restore resources
         # self.current_time # current running time for compute when the resources back to pool again
         # self.restore_resources = {} # {'resources':{'cpu':3,'gpu':0}, 'restore_time': 100}
@@ -265,6 +268,75 @@ class evosch2:
         return current_time
     
     def calculate_completion_time_record(self, ind):
+        available_cpu = self.resources['cpu']
+        current_time = 0
+        ongoing_task = []
+        running_seq = []  # 记录任务执行的顺序和时间
+
+        for task in ind.task_allocation:
+            # 检查是否有任务已经完成
+            while ongoing_task and ongoing_task[0][0] <= current_time:
+                _, cpus, finished_task_id, task_name = heapq.heappop(ongoing_task)
+                available_cpu += cpus
+                # 更新任务的完成时间
+                for task_record in running_seq:
+                    if task_record['task_id'] == finished_task_id and task_record['name'] == task_name:
+                        task_record['finish_time'] = current_time
+                        task_record['total_runtime'] = current_time - task_record['start_time']
+                        break
+
+            # 等待直到有足够的CPU资源
+            while available_cpu < task['resources']['cpu']:
+                if ongoing_task:
+                    next_finish_time, cpus, finished_task_id, task_name = heapq.heappop(ongoing_task)
+                    for task_record in running_seq:
+                        if task_record['task_id'] == finished_task_id and task_record['name'] == task_name:
+                            task_record['finish_time'] = current_time
+                            task_record['total_runtime'] = current_time - task_record['start_time']
+                            break
+                    current_time = next_finish_time
+                    available_cpu += cpus
+                else:
+                    break
+
+            if available_cpu < task['resources']['cpu']:
+                # skip current task
+                raise ValueError("Not enough CPUs for all tasks")
+                # logger.info("Not enough CPUs for all tasks")
+            
+            # start a new one
+            available_cpu -= task['resources']['cpu']
+            start_time = current_time
+            # finish_time = current_time + self.estimate_simulation_time(task, task['resources']['cpu'])
+            finish_time = current_time + self.hist_data.estimate_time(task = task)
+            heapq.heappush(ongoing_task, (finish_time, task['resources']['cpu'], task['task_id'], task['name']))
+
+            # 记录任务的开始时间和其他信息
+            running_seq.append({
+                'name': task['name'],
+                'task_id': task['task_id'],
+                'start_time': start_time,
+                'finish_time': None,  # 将在任务完成时更新
+                'total_runtime': None  # 将在任务完成时更新
+            })
+
+        # 清空剩余的任务并记录完成时间
+        while ongoing_task:
+            next_finish_time, cpus, finished_task_id, task_name = heapq.heappop(ongoing_task)
+            available_cpu += cpus
+            current_time = next_finish_time
+            # 更新任务的完成时间
+            for task_record in running_seq:
+                if task_record['task_id'] == finished_task_id and task_record['name'] == task_name:
+                    task_record['finish_time'] = current_time
+                    task_record['total_runtime'] = current_time - task_record['start_time']
+                    break
+        
+        ind.predict_run_seq = running_seq
+        # 返回总完成时间和任务运行序列
+        return current_time
+    
+    def calculate_completion_time_record_with_running_task(self, ind):
         available_cpu = self.resources['cpu']
         current_time = 0
         ongoing_task = []
