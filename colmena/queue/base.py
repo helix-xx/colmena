@@ -371,7 +371,7 @@ class ColmenaQueues:
                 self.evosch.at.remove_task_id(task_name=task['name'], task_id=task['task_id'])
                 # refresh the predict task information
                 predict_task['start_time'] = time.time()
-                predict_task['finish_time'] = predict_task['start_time'] + predict_task['toatal_runtime']
+                predict_task['finish_time'] = predict_task['start_time'] + predict_task['total_runtime']
                 self.evosch.running_task.append(predict_task)
                 # pop the task from available task list
                 result = self.result_list.pop(task['task_id'])
