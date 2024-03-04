@@ -147,6 +147,15 @@ class available_task(SingletonClass):
 
 @dataclass
 class historical_data(SingletonClass):
+    features = [
+    # "method",
+    "message_sizes.inputs",
+    # "worker_info.hostname",
+    "resources.node_count",
+    "resources.cpu_processes",
+    "resources.cpu_threads",
+    "time_running"]
+    
     def __init__(self, topics: Collection[str], estimate_methods: dict[str, callable], queue=None):
         self.historical_data = {}
         self.estimate_methods = estimate_methods
@@ -164,6 +173,7 @@ class historical_data(SingletonClass):
         topic = task['name']
         return self.estimate_methods[topic](task, self.historical_data, self.queue)
 
+## old estimates need users input estimate function
 def estimate_trainning_time(task, his=None, queue=None):
     return 10
 
@@ -188,6 +198,9 @@ def estimate_inference_time(task, his=None, queue=None):
     return 10
 # topics=['simulate', 'sample', 'train', 'infer']
 estimate_methods = {'train': estimate_trainning_time, 'sample': estimate_sampling_time, 'simulate': estimate_simulation_time, 'infer': estimate_inference_time}
+
+def RandomForestRegressor_estimate(task, his, queue):
+    return 10
 
 
 class evosch2:
