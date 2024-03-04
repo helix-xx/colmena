@@ -319,6 +319,7 @@ class ColmenaQueues:
             resources=resources or ResourceRequirements(),  # Takes either the user specified or a default
             **ps_kwargs
         )
+        result.time_serialize_inputs, proxies = result.serialize()
         
         ## add to available task list YXX, under this lock agent cant submit task
         with self._add_task_lock:
@@ -379,9 +380,8 @@ class ColmenaQueues:
                 logger.info(f'Resources: result.inputs[1] is: {result.inputs[1]}')
                 method = result.method
                 topic = task['name']
-                result.time_serialize_inputs, proxies = result.serialize()
                 self._send_request(result.json(exclude_none=True), topic)
-                logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
+                # logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
     
     def trigger_evo_sch(self):
         """Conditions that trigger scheduling and submission of tasks
