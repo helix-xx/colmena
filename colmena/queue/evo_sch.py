@@ -202,9 +202,10 @@ class historical_data(SingletonClass):
     def random_forest_train(self):
         for method in self.historical_data:
             data = self.historical_data[method]
-            model = self.random_forest_model[method]
             if len(data) == 0:
                 continue
+            model = self.random_forest_model[method]
+
             X = []
             y = []
             for feature_values in data:
