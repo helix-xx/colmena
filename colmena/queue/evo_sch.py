@@ -186,7 +186,7 @@ class historical_data(SingletonClass):
     
     def get_features_from_his_json(self, his_json:Union[str, list[str]]):
         for path in his_json:
-            with open(path, 'r'):
+            with open(path, 'r') as f:
                 for line in f:
                     json_line = json.loads(line)
                     feature_values = {}
@@ -214,19 +214,19 @@ class historical_data(SingletonClass):
             model.fit(X_train, y_train)
             print(f"method: {method}, random forest regressor score: {model.score(X_test, y_test)}")
 
-    # def estimate_time(self, task):
-    #     method = task['name']
-    #     result: Result = self.queue.result_list[task['task_id']]
-    #     model = self.random_forest_model[method]
-    #     feature_values = {}
-    #     for feature in self.features:
-    #         value = result
-    #         for key in feature.split('.'):
-    #             value = getattr(value, key)
-    #         feature_values[feature] = value
+    def estimate_time(self, task):
+        method = task['name']
+        result: Result = self.queue.result_list[task['task_id']]
+        model = self.random_forest_model[method]
+        feature_values = {}
+        for feature in self.features:
+            value = result
+            for key in feature.split('.'):
+                value = getattr(value, key)
+            feature_values[feature] = value
 
         
-    #     pass
+        pass
             
             
         
