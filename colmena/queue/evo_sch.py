@@ -3,13 +3,11 @@ from asyncio import futures
 import copy
 from ctypes import Union
 from itertools import accumulate
-from math import e, sin
 from pathlib import Path
 import logging
 import re
 import shutil
 from collections import deque, OrderedDict
-from tarfile import LENGTH_LINK
 from typing import Collection, Dict, Any, Optional, ClassVar, Union, List
 from copy import deepcopy
 import json
@@ -18,11 +16,15 @@ import numpy as np
 import time
 import pickle
 import random
-from random import randint, shuffle, sample
 import concurrent.futures
 import sys
 import heapq
 from dataclasses import dataclass, field, asdict, is_dataclass
+from colmena.models import Result
+
+
+from  sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
 
 sys.path.append(r"/home/lizz_lab/cse30019698/project/colmena/multisite_/")
 from my_util.data_structure import *
@@ -148,7 +150,7 @@ class available_task(SingletonClass):
 @dataclass
 class historical_data(SingletonClass):
     features = [
-    # "method",
+    "method",
     "message_sizes.inputs",
     # "worker_info.hostname",
     "resources.node_count",
@@ -156,51 +158,79 @@ class historical_data(SingletonClass):
     "resources.cpu_threads",
     "time_running"]
     
-    def __init__(self, topics: Collection[str], estimate_methods: dict[str, callable], queue=None):
+    def __init__(self, methods: Collection[str], queue=None):
         self.historical_data = {}
-        self.estimate_methods = estimate_methods
-        for topic in topics:
-            self.historical_data[topic] = {}
+        self.random_forest_model = {str: RandomForestRegressor}
+        for method in methods:
+            self.historical_data[method] = []
         
         self.queue = queue
     
-    def add_data(self, topic, data):
-        if topic not in self.historical_data:
-            self.historical_data[topic] = {}
-        self.historical_data[topic].update(data)
+    def add_data(self, feature_values: dict[str, Any]):
+        method = feature_values['method']
+        if method not in self.historical_data:
+            self.historical_data[method] = []
+            self.random_forest_model[method] = RandomForestRegressor(n_estimators=100, random_state=42)
+        self.historical_data[method].append(feature_values)
+    
+    def get_features_from_result_object(self, result:Result):
+        feature_values = {}
+        for feature in self.features:
+            value = result
+            for key in feature.split('.'):
+                value = getattr(value, key)
+                # if value is None:
+                #     break
+            feature_values[key] = value
+        self.add_data(feature_values)
+    
+    def get_features_from_his_json(self, his_json:Union[str, list[str]]):
+        for path in his_json:
+            with open(path, 'r'):
+                for line in f:
+                    json_line = json.loads(line)
+                    feature_values = {}
+                    for feature in self.features:
+                        value = json_line
+                        for key in feature.split('.'):
+                            value = value.get(key)
+                            # if value is None:
+                            #     break
+                        feature_values[feature] = value
+                    self.add_data(feature_values)
+                    
+    def random_forest_train(self):
+        for method in self.historical_data:
+            data = self.historical_data[method]
+            model = self.random_forest_model[method]
+            if len(data) == 0:
+                continue
+            X = []
+            y = []
+            for feature_values in data:
+                X.append([feature_values[feature] for feature in self.features[1:]])
+                y.append(feature_values['time_running'])
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            model.fit(X_train, y_train)
+            print(f"method: {method}, random forest regressor score: {model.score(X_test, y_test)}")
 
-    def estimate_time(self, task):
-        topic = task['name']
-        return self.estimate_methods[topic](task, self.historical_data, self.queue)
+    # def estimate_time(self, task):
+    #     method = task['name']
+    #     result: Result = self.queue.result_list[task['task_id']]
+    #     model = self.random_forest_model[method]
+    #     feature_values = {}
+    #     for feature in self.features:
+    #         value = result
+    #         for key in feature.split('.'):
+    #             value = getattr(value, key)
+    #         feature_values[feature] = value
 
-## old estimates need users input estimate function
-def estimate_trainning_time(task, his=None, queue=None):
-    return 10
-
-def estimate_sampling_time(task, his=None, queue=None):
-    return 10
-
-def estimate_simulation_time(task, his=None, queue=None):
-    # molecule_length = queue.result_list[task['task_id']].inputs.split('\n')[0]
-    molecule_length = task_queue_audit[int(task['task_id'])].atoms.get_positions().shape[0]
-    cpu_cores = task['resources']['cpu']
-    length_times = his['length_times']
-    core_times = his['core_times']
-    closest_length = min(length_times.keys(), key=lambda x: abs(x-molecule_length))
-    length_time = length_times[closest_length]
-
-    closest_cores = min(core_times.keys(), key=lambda x: abs(x-cpu_cores))
-    core_time = core_times[closest_cores]
-
-    return length_time*core_time/40
-
-def estimate_inference_time(task, his=None, queue=None):
-    return 10
-# topics=['simulate', 'sample', 'train', 'infer']
-estimate_methods = {'train': estimate_trainning_time, 'sample': estimate_sampling_time, 'simulate': estimate_simulation_time, 'infer': estimate_inference_time}
-
-def RandomForestRegressor_estimate(task, his, queue):
-    return 10
+        
+    #     pass
+            
+            
+        
+        
 
 
 class evosch2:
@@ -670,12 +700,12 @@ if __name__ == '__main__':
     trainning_time = 100
     sampling_time = 100
     inference_time = 100
-    topics=['train', 'sample', 'infer', 'simulate']
-    
-    hist_data = historical_data(topics=topics, estimate_methods=estimate_methods)
+    # topics=['train', 'sample', 'infer', 'simulate']
+    methods = {'train', 'evaluate', 'run_calculator', 'run_sampling'}
+    hist_data = historical_data(methods=methods)
     tasks = {}
-    for topic in topics:
-        tasks[topic] = []
+    for method in methods:
+        tasks[method] = []
     available_task__ = available_task(task_ids=tasks)
     available_resources = {"cpu": 64, "gpu": 4, "memory": "128G"}
     sch = evosch2(resources=available_resources, at=available_task__, hist_data=hist_data)

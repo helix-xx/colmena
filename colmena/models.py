@@ -143,22 +143,32 @@ class WorkerInformation(BaseModel, extra=Extra.allow):
     hostname: Optional[str] = Field(None, description='Hostname of the worker who executed this task')
 
 
+## edit by YXX, change resource requirements suitable for evo_sch
+# class ResourceRequirements(BaseModel):
+#     """Resource requirements for tasks. Used by some Colmena backends to allocate resources to the task
+
+#     Follows the naming conventions of
+#     `RADICAL-Pilot <https://radicalpilot.readthedocs.io/en/stable/apidoc.html#taskdescription>`_.
+#     """
+
+#     # Defining how we use CPU resources
+#     node_count: int = Field(1, description='Total number of nodes to use for the task')
+#     cpu_processes: int = Field(1, description='Total number of MPI ranks per node')
+#     cpu_threads: int = Field(1, description='Number of threads per process')
+
+#     @property
+#     def total_ranks(self) -> int:
+#         """Total number of MPI ranks"""
+#         return self.node_count * self.cpu_processes
+
 class ResourceRequirements(BaseModel):
-    """Resource requirements for tasks. Used by some Colmena backends to allocate resources to the task
-
-    Follows the naming conventions of
-    `RADICAL-Pilot <https://radicalpilot.readthedocs.io/en/stable/apidoc.html#taskdescription>`_.
-    """
-
-    # Defining how we use CPU resources
-    node_count: int = Field(1, description='Total number of nodes to use for the task')
-    cpu_processes: int = Field(1, description='Total number of MPI ranks per node')
-    cpu_threads: int = Field(1, description='Number of threads per process')
-
-    @property
-    def total_ranks(self) -> int:
-        """Total number of MPI ranks"""
-        return self.node_count * self.cpu_processes
+    num_cpus: int = Field(1, description='Number of CPUs to use for the task')
+    num_gpus: int = Field(0, description='Number of GPUs to use for the task')
+    num_threads: int = Field(1, description='Number of threads to use for the task')
+    
+    # Optional
+    memory: Optional[int] = Field(None, description='Amount of memory to use for the task, MB')
+    disk: Optional[int] = Field(None, description='Amount of disk space to use for the task, MB')
 
 
 class Result(BaseModel):
