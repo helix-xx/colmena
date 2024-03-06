@@ -143,7 +143,7 @@ class WorkerInformation(BaseModel, extra=Extra.allow):
     hostname: Optional[str] = Field(None, description='Hostname of the worker who executed this task')
 
 
-## edit by YXX, change resource requirements suitable for evo_sch
+# edit by YXX, change resource requirements suitable for evo_sch
 # class ResourceRequirements(BaseModel):
 #     """Resource requirements for tasks. Used by some Colmena backends to allocate resources to the task
 

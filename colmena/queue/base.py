@@ -42,7 +42,7 @@ class ColmenaQueues:
                  proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
                  proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
                  available_task_capacity: Optional[int] = 16,
-                 estimate_methods: Optional[Dict[str, callable]] = None,
+                #  estimate_methods: Optional[Dict[str, callable]] = None,
                  available_resources = {"cpu": 64, "gpu": 4, "memory": "128G"}):
         """
         Args:
@@ -78,7 +78,7 @@ class ColmenaQueues:
         self._add_task_lock = Lock()
         self._add_task_flag.set()
         ## TODO Extract historical data to estimate running time, and register estimate_methods. by YXX
-        historical_data = evo_sch.historical_data(topics=topics, estimate_methods=estimate_methods, queue=self)
+        historical_data = evo_sch.historical_data(topics=topics, queue=self)
         self._available_task_capacity = available_task_capacity
         available_task = {}
         for topic in self.topics:

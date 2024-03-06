@@ -12,6 +12,7 @@ from typing import Collection, Dict, Any, Optional, ClassVar, Union, List
 from copy import deepcopy
 import json
 from functools import partial, update_wrapper
+import pandas as pd
 import numpy as np
 import time
 import pickle
@@ -160,17 +161,20 @@ class historical_data(SingletonClass):
     
     def __init__(self, methods: Collection[str], queue=None):
         self.historical_data = {}
-        self.random_forest_model = {str: RandomForestRegressor}
+        self.random_forest_model = {}
         for method in methods:
             self.historical_data[method] = []
+            self.random_forest_model[method] = RandomForestRegressor(n_estimators=100, random_state=42)
         
         self.queue = queue
     
     def add_data(self, feature_values: dict[str, Any]):
         method = feature_values['method']
+        # if method not in self.historical_data:
+        #     self.historical_data[method] = []
+        #     self.random_forest_model[method] = RandomForestRegressor(n_estimators=100, random_state=42)
         if method not in self.historical_data:
-            self.historical_data[method] = []
-            self.random_forest_model[method] = RandomForestRegressor(n_estimators=100, random_state=42)
+            logger.warning(f"method {method} not in historical data")
         self.historical_data[method].append(feature_values)
     
     def get_features_from_result_object(self, result:Result):
@@ -178,7 +182,11 @@ class historical_data(SingletonClass):
         for feature in self.features:
             value = result
             for key in feature.split('.'):
-                value = getattr(value, key)
+                if isinstance(value, dict):
+                    value = value.get(key)
+                    break
+                else:
+                    value = getattr(value, key)
                 # if value is None:
                 #     break
             feature_values[key] = value
@@ -202,6 +210,8 @@ class historical_data(SingletonClass):
     def random_forest_train(self):
         for method in self.historical_data:
             data = self.historical_data[method]
+            df = pd.DataFrame(data)
+            df.dropna(inplace=True)
             if len(data) == 0:
                 continue
             model = self.random_forest_model[method]
@@ -209,8 +219,8 @@ class historical_data(SingletonClass):
             X = []
             y = []
             for feature_values in data:
-                X.append([feature_values[feature] for feature in self.features[1:]])
-                y.append(feature_values['time_running'])
+                X = df.drop(columns=['time_running', 'method'])
+                y = df['time_running']
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
             model.fit(X_train, y_train)
             print(f"method: {method}, random forest regressor score: {model.score(X_test, y_test)}")
@@ -223,11 +233,14 @@ class historical_data(SingletonClass):
         for feature in self.features:
             value = result
             for key in feature.split('.'):
-                value = getattr(value, key)
+                if isinstance(value, dict):
+                    value = value.get(key)
+                    break
+                else:
+                    value = getattr(value, key)
             feature_values[feature] = value
-
-        
-        pass
+        X = pd.DataFrame([feature_values]).drop(columns=['time_running', 'method'])
+        return model.predict(X)[0]
             
             
         
