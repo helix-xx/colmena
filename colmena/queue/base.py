@@ -89,6 +89,8 @@ class ColmenaQueues:
         
         self.evosch:evo_sch.evosch2 = evo_sch.evosch2(resources=available_resources, at=self._available_tasks, hist_data=historical_data)
         self.best_ind = None
+        # trace task submit seq
+        self.task_submit_seq = None
         
         ## Result list temp for result object, can be quick search by task_id
         self.result_list = {} # can be quick search by id
@@ -238,6 +240,8 @@ class ColmenaQueues:
             if task['task_id'] == result_obj.task_id:
                 self.evosch.running_task.remove(task)
                 break
+
+        self.evosch.hist_data.get_features_from_result_object(result_obj)
         
         logger.info(f'Client received a {result_obj.method} result with topic {topic}, restore resources:remain resource is {self.evosch.resources}')
         
@@ -315,6 +319,7 @@ class ColmenaQueues:
         result = Result(
             (input_args, input_kwargs),
             method=method,
+            topic=topic,
             keep_inputs=_keep_inputs,
             serialization_method=self.serialization_method,
             task_info=task_info,
@@ -379,10 +384,11 @@ class ColmenaQueues:
                 # pop the task from available task list
                 result = self.result_list.pop(task['task_id'])
                 result.inputs[1]['cpu'] = value 
-                result.resources['num_cpus'] = value
+                # result.resources['num_cpus'] = value
+                setattr(result.resources,'num_cpus',value)
                 logger.info(f'Resources: result.resources is: {result.resources}')
                 method = result.method
-                topic = task['name']
+                topic = result.topic
                 self._send_request(result.json(exclude_none=True), topic)
                 # logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
     

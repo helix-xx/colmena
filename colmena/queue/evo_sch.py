@@ -221,7 +221,7 @@ class historical_data(SingletonClass):
             for feature_values in data:
                 X = df.drop(columns=['time_running', 'method'])
                 y = df['time_running']
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.9, random_state=42)
             model.fit(X_train, y_train)
             print(f"method: {method}, random forest regressor score: {model.score(X_test, y_test)}")
 
@@ -284,19 +284,29 @@ class evosch2:
         return the individual contain no record task
         '''
         task_queue = []
+        predict_running_seq = []
         all_tasks = self.at.get_all()
         for name, ids in all_tasks.items():
-            if name not in self.hist_data.historical_data:
-                new_task = {
-                    "name":name,
-                    "task_id": ids[0],
-                    "resources":{
-                        "cpu": self.get_resources()['cpu']
+            if len(ids) > 0:
+                if len(self.hist_data.historical_data[name])<2: # no data for train
+                    new_task = {
+                        "name":name,
+                        "task_id": ids[0],
+                        "resources":{
+                            "cpu": self.get_resources()['cpu']
+                        }
                     }
-                }
-                task_queue.append(new_task)
+                    task_queue.append(new_task)
+                    predict_running_seq.append({
+                        'name': name,
+                        'task_id': ids[0],
+                        'start_time': 0,
+                        'finish_time': None,  
+                        'total_runtime': 10 ** 7 # 无意义值  
+                    })
         ind = individual(tasks_nums=len(task_queue),total_resources=self.get_resources())
         ind.task_allocation = task_queue
+        ind.predict_run_seq = predict_running_seq
         return ind
 
 

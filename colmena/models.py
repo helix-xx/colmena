@@ -161,7 +161,15 @@ class WorkerInformation(BaseModel, extra=Extra.allow):
 #         """Total number of MPI ranks"""
 #         return self.node_count * self.cpu_processes
 
+# class ResourceRequirements(): # we want to modify this in evo_sch
 class ResourceRequirements(BaseModel):
+    # num_cpus:int = 1
+    # num_gpus:int = 0
+    # num_threads:int = 1
+
+    # memory: Optional[int] = None
+    # disk: Optional[int] = None
+
     num_cpus: int = Field(1, description='Number of CPUs to use for the task')
     num_gpus: int = Field(0, description='Number of GPUs to use for the task')
     num_threads: int = Field(1, description='Number of threads to use for the task')
@@ -188,6 +196,7 @@ class Result(BaseModel):
                                 "is for internal use and is used when communicating serialized objects.")
     value: Any = Field(None, description="Output of a function")
     method: Optional[str] = Field(None, description="Name of the method to run.")
+    topic: Optional[str] = Field(None, description="Name of the method to run.")
     success: Optional[bool] = Field(None, description="Whether the task completed successfully")
 
     # Store task information
@@ -195,6 +204,7 @@ class Result(BaseModel):
                                                 description="Task tracking information to be transmitted "
                                                             "along with inputs and results. User provided")
     resources: ResourceRequirements = Field(default_factory=ResourceRequirements, help='List of the resources required for a task, if desired')
+    # resources: ResourceRequirements = ResourceRequirements()
     failure_info: Optional[FailureInformation] = Field(None, description="Messages about task failure. Provided by Task Server")
     worker_info: Optional[WorkerInformation] = Field(None, description="Information about the worker which executed a task. Provided by Task Server")
 
