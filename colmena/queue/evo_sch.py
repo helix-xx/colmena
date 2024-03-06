@@ -154,9 +154,9 @@ class historical_data(SingletonClass):
     "method",
     "message_sizes.inputs",
     # "worker_info.hostname",
-    "resources.node_count",
-    "resources.cpu_processes",
-    "resources.cpu_threads",
+    "resources.num_cpus",
+    "resources.num_gpus",
+    # "resources.num_threads",
     "time_running"]
     
     def __init__(self, methods: Collection[str], queue=None):
@@ -277,23 +277,29 @@ class evosch2:
     def get_piority(self):
         pass
     
-    # def estimate_simulation_time(self, task, cpu_cores=1):        
-    #     molecule_length = self.task_queue_audit[task['task_id']].atoms.get_positions().shape[0]
-    #     cpu_cores = cpu_cores
-        
-        
-    #     closest_length = min(self.length_times, key=lambda x: abs(x[0]-molecule_length))
-    #     length_time = closest_length[1]
+    def detect_no_his_task(self):
+        '''
+        detect if there is task not in historical data
+        without historical data, estimate method cannot work, we need run them first, and record the historical data to train the model
+        return the individual contain no record task
+        '''
+        task_queue = []
+        all_tasks = self.at.get_all()
+        for name, ids in all_tasks.items():
+            if name not in self.hist_data.historical_data:
+                new_task = {
+                    "name":name,
+                    "task_id": ids[0],
+                    "resources":{
+                        "cpu": self.get_resources()['cpu']
+                    }
+                }
+                task_queue.append(new_task)
+        ind = individual(tasks_nums=len(task_queue),total_resources=self.get_resources())
+        ind.task_allocation = task_queue
+        return ind
 
-    #     closest_cores = min(self.core_times.keys(), key=lambda x: abs(x-cpu_cores))
-    #     core_time = self.core_times[closest_cores]
 
-    #     return length_time*core_time/40
-    
-    # def estimate_time():
-    #     # estimate time should get hist data in colmena
-    #     # estimate function should given by user and register in colmena
-    #     pass
     def calculate_completion_time(self, ind:individual):
         available_cpu = self.resources_evo['cpu']
         current_time = 0
@@ -666,6 +672,14 @@ class evosch2:
         
             
     def run_ga(self, num_generations):
+        # run no record task
+        ind = self.detect_no_his_task()
+        if len(ind.task_allocation) > 0:
+            return ind
+        
+        # train random forest model for predict running time
+        self.hist_data.random_forest_train()
+
         # resources = self.get_resources()
         # population = self.generate_population(pop_size)
         # logger.info(f"Starting GA with available tasks: {self.at.get_all()}")

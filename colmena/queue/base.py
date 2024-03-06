@@ -37,6 +37,7 @@ class ColmenaQueues:
 
     def __init__(self,
                  topics: Collection[str],
+                 methods: Collection[str],
                  serialization_method: Union[str, SerializationMethod] = SerializationMethod.JSON,
                  keep_inputs: bool = True,
                  proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
@@ -67,6 +68,7 @@ class ColmenaQueues:
 
         # Store the list of topics and other simple options
         self.topics = set(topics)
+        self.methods = set(methods)
         self.topics.add('default')
         self.keep_inputs = keep_inputs
         self.serialization_method = serialization_method
@@ -78,11 +80,11 @@ class ColmenaQueues:
         self._add_task_lock = Lock()
         self._add_task_flag.set()
         ## TODO Extract historical data to estimate running time, and register estimate_methods. by YXX
-        historical_data = evo_sch.historical_data(topics=topics, queue=self)
+        historical_data = evo_sch.historical_data(methods=methods, queue=self)
         self._available_task_capacity = available_task_capacity
         available_task = {}
-        for topic in self.topics:
-            available_task[topic] = []
+        for method in self.methods:
+            available_task[method] = []
         self._available_tasks = evo_sch.available_task(available_task)
         
         self.evosch:evo_sch.evosch2 = evo_sch.evosch2(resources=available_resources, at=self._available_tasks, hist_data=historical_data)
@@ -323,7 +325,7 @@ class ColmenaQueues:
         
         ## add to available task list YXX, under this lock agent cant submit task
         with self._add_task_lock:
-            self._available_tasks.add_task_id(task_name=topic, task_id=result.task_id)
+            self._available_tasks.add_task_id(task_name=method, task_id=result.task_id)
             logger.info(f'Client sent a {method} task with topic {topic}.')
             self.result_list[result.task_id] = result
             # detect the capacity
@@ -377,7 +379,8 @@ class ColmenaQueues:
                 # pop the task from available task list
                 result = self.result_list.pop(task['task_id'])
                 result.inputs[1]['cpu'] = value 
-                logger.info(f'Resources: result.inputs[1] is: {result.inputs[1]}')
+                result.resources['num_cpus'] = value
+                logger.info(f'Resources: result.resources is: {result.resources}')
                 method = result.method
                 topic = task['name']
                 self._send_request(result.json(exclude_none=True), topic)

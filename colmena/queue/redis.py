@@ -39,6 +39,7 @@ class RedisQueues(ColmenaQueues):
 
     def __init__(self,
                  topics: Collection[str],
+                 methods: Collection[str],
                  hostname: str = '127.0.0.1',
                  port: int = 6379,
                  prefix: str = uuid4(),
@@ -47,7 +48,6 @@ class RedisQueues(ColmenaQueues):
                  proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
                  proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
                  available_task_capacity: Optional[int] = 100, # add for evoscheduler
-                 estimate_methods: Optional[Dict[str, callable]] = None,
                  available_resources = {"cpu": 64, "gpu": 4, "memory": "128G"}):
         """
         Args:
@@ -68,7 +68,7 @@ class RedisQueues(ColmenaQueues):
                 ProxyStore use with that topic.
 
         """
-        super().__init__(topics, serialization_method, keep_inputs, proxystore_name, proxystore_threshold,available_task_capacity, estimate_methods, available_resources)
+        super().__init__(topics, methods, serialization_method, keep_inputs, proxystore_name, proxystore_threshold,available_task_capacity, available_resources)
         self.hostname = hostname
         self.port = port
         self.redis_client = None
