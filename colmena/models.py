@@ -170,11 +170,12 @@ class ResourceRequirements(BaseModel):
     # memory: Optional[int] = None
     # disk: Optional[int] = None
 
-    num_cpus: int = Field(1, description='Number of CPUs to use for the task')
-    num_gpus: int = Field(0, description='Number of GPUs to use for the task')
-    num_threads: int = Field(1, description='Number of threads to use for the task')
+    cpu: int = Field(1, description='Number of CPUs to use for the task')
+    gpu: int = Field(0, description='Number of GPUs to use for the task')
+    
     
     # Optional
+    thread: int = Field(1, description='Number of threads to use for the task')
     memory: Optional[int] = Field(None, description='Amount of memory to use for the task, MB')
     disk: Optional[int] = Field(None, description='Amount of disk space to use for the task, MB')
 

@@ -154,9 +154,9 @@ class historical_data(SingletonClass):
     "method",
     "message_sizes.inputs",
     # "worker_info.hostname",
-    "resources.num_cpus",
-    "resources.num_gpus",
-    # "resources.num_threads",
+    "resources.cpu",
+    "resources.gpu",
+    # "resources.thread",
     "time_running"]
     
     def __init__(self, methods: Collection[str], queue=None):
@@ -164,7 +164,7 @@ class historical_data(SingletonClass):
         self.random_forest_model = {}
         for method in methods:
             self.historical_data[method] = []
-            self.random_forest_model[method] = RandomForestRegressor(n_estimators=100, random_state=42)
+            self.random_forest_model[method] = RandomForestRegressor(n_estimators=10, random_state=42, n_jobs=-1)
         
         self.queue = queue
     
@@ -227,6 +227,7 @@ class historical_data(SingletonClass):
             logger.info(f"method: {method}, random forest regressor score: {model.score(X_test, y_test)}")
 
     def estimate_time(self, task):
+        # use allocate resource to estimate running time
         method = task['name']
         result: Result = self.queue.result_list[task['task_id']]
         model = self.random_forest_model[method]
@@ -239,9 +240,46 @@ class historical_data(SingletonClass):
                     break
                 else:
                     value = getattr(value, key)
+            if key in task['resources']:
+                value = task['resources'][key]
             feature_values[feature] = value
         X = pd.DataFrame([feature_values]).drop(columns=['time_running', 'method'])
         return model.predict(X)[0]
+    
+    def estimate_batch(self, population):
+        tasks = []
+        for ind in population:
+            task_allocation = ind.task_allocation
+            tasks.extend(task_allocation)
+
+        feature_values = []
+        for task in tasks:
+            result: Result = self.queue.result_list[task['task_id']]
+            method = task['name']
+            model = self.random_forest_model[method]
+            feature_values.append((task, result, model))
+
+        def estimate_task_time(task, result, model):
+            feature_values = {}
+            for feature in self.features:
+                value = result
+                for key in feature.split('.'):
+                    if isinstance(value, dict):
+                        value = value.get(key)
+                        break
+                    else:
+                        value = getattr(value, key)
+                if key in task['resources']:
+                    value = task['resources'][key]
+                feature_values[feature] = value
+            X = pd.DataFrame([feature_values]).drop(columns=['time_running', 'method'])
+            return model.predict(X)[0]
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = executor.map(lambda x: estimate_task_time(*x), feature_values)
+
+        for task, runtime in zip(tasks, results):
+            task['total_runtime'] = runtime
             
             
         
@@ -277,6 +315,11 @@ class evosch2:
         return self.resources
     def get_piority(self):
         pass
+
+    def detect_submit_sequence(self):
+
+        # detect submit task sequence to choose proper task to run
+        pass
     
     def detect_no_his_task(self):
         '''
@@ -311,104 +354,104 @@ class evosch2:
         return ind
 
 
-    def calculate_completion_time(self, ind:individual):
-        available_cpu = self.resources_evo['cpu']
-        current_time = 0
-        ongoing_task = []
-        for task in ind.task_allocation:
-            while ongoing_task and ongoing_task[0][0] <= current_time:
-                _, cpus = heapq.heappop(ongoing_task)
-                available_cpu += cpus
+    # def calculate_completion_time(self, ind:individual):
+    #     available_cpu = self.resources_evo['cpu']
+    #     current_time = 0
+    #     ongoing_task = []
+    #     for task in ind.task_allocation:
+    #         while ongoing_task and ongoing_task[0][0] <= current_time:
+    #             _, cpus = heapq.heappop(ongoing_task)
+    #             available_cpu += cpus
                 
-            while available_cpu < task['resources']['cpu']:
-                if ongoing_task:
-                    next_finish_time, cpus = heapq.heappop(ongoing_task)
-                    current_time = next_finish_time
-                    available_cpu += cpus
-                else:
-                    break
+    #         while available_cpu < task['resources']['cpu']:
+    #             if ongoing_task:
+    #                 next_finish_time, cpus = heapq.heappop(ongoing_task)
+    #                 current_time = next_finish_time
+    #                 available_cpu += cpus
+    #             else:
+    #                 break
             
-            if available_cpu < task['resources']['cpu']:
-                raise ValueError("Not enough CPUs for all tasks")
+    #         if available_cpu < task['resources']['cpu']:
+    #             raise ValueError("Not enough CPUs for all tasks")
             
-            available_cpu -= task['resources']['cpu']
-            # finish_time = current_time + self.estimate_simulation_time(task,task['resources']['cpu'])
-            finish_time = current_time + self.hist_data.estimate_time(task = task)
-            heapq.heappush(ongoing_task, (finish_time, task['resources']['cpu']))
-        while ongoing_task:
-            next_finish_time, cpus = heapq.heappop(ongoing_task)
-            available_cpu += cpus
-            current_time = next_finish_time
-        return current_time
+    #         available_cpu -= task['resources']['cpu']
+    #         # finish_time = current_time + self.hist_data.estimate_time(task = task)
+    #         finish_time = current_time + task['total_runtime']
+    #         heapq.heappush(ongoing_task, (finish_time, task['resources']['cpu']))
+    #     while ongoing_task:
+    #         next_finish_time, cpus = heapq.heappop(ongoing_task)
+    #         available_cpu += cpus
+    #         current_time = next_finish_time
+    #     return current_time
     
-    def calculate_completion_time_record(self, ind):
-        available_cpu = self.resources_evo['cpu']
-        current_time = 0
-        ongoing_task = []
-        running_seq = []  # 记录任务执行的顺序和时间
+    # def calculate_completion_time_record(self, ind):
+    #     available_cpu = self.resources_evo['cpu']
+    #     current_time = 0
+    #     ongoing_task = []
+    #     running_seq = []  # 记录任务执行的顺序和时间
 
-        for task in ind.task_allocation:
-            # 检查是否有任务已经完成
-            while ongoing_task and ongoing_task[0][0] <= current_time:
-                _, cpus, finished_task_id, task_name = heapq.heappop(ongoing_task)
-                available_cpu += cpus
-                # 更新任务的完成时间
-                for task_record in running_seq:
-                    if task_record['task_id'] == finished_task_id and task_record['name'] == task_name:
-                        task_record['finish_time'] = current_time
-                        task_record['total_runtime'] = current_time - task_record['start_time']
-                        break
+    #     for task in ind.task_allocation:
+    #         # 检查是否有任务已经完成
+    #         while ongoing_task and ongoing_task[0][0] <= current_time:
+    #             _, cpus, finished_task_id, task_name = heapq.heappop(ongoing_task)
+    #             available_cpu += cpus
+    #             # 更新任务的完成时间
+    #             for task_record in running_seq:
+    #                 if task_record['task_id'] == finished_task_id and task_record['name'] == task_name:
+    #                     task_record['finish_time'] = current_time
+    #                     task_record['total_runtime'] = current_time - task_record['start_time']
+    #                     break
 
-            # 等待直到有足够的CPU资源
-            while available_cpu < task['resources']['cpu']:
-                if ongoing_task:
-                    next_finish_time, cpus, finished_task_id, task_name = heapq.heappop(ongoing_task)
-                    for task_record in running_seq:
-                        if task_record['task_id'] == finished_task_id and task_record['name'] == task_name:
-                            task_record['finish_time'] = current_time
-                            task_record['total_runtime'] = current_time - task_record['start_time']
-                            break
-                    current_time = next_finish_time
-                    available_cpu += cpus
-                else:
-                    break
+    #         # 等待直到有足够的CPU资源
+    #         while available_cpu < task['resources']['cpu']:
+    #             if ongoing_task:
+    #                 next_finish_time, cpus, finished_task_id, task_name = heapq.heappop(ongoing_task)
+    #                 for task_record in running_seq:
+    #                     if task_record['task_id'] == finished_task_id and task_record['name'] == task_name:
+    #                         task_record['finish_time'] = current_time
+    #                         task_record['total_runtime'] = current_time - task_record['start_time']
+    #                         break
+    #                 current_time = next_finish_time
+    #                 available_cpu += cpus
+    #             else:
+    #                 break
 
-            if available_cpu < task['resources']['cpu']:
-                # skip current task
-                raise ValueError("Not enough CPUs for all tasks")
-                # logger.info("Not enough CPUs for all tasks")
+    #         if available_cpu < task['resources']['cpu']:
+    #             # skip current task
+    #             raise ValueError("Not enough CPUs for all tasks")
+    #             # logger.info("Not enough CPUs for all tasks")
             
-            # start a new one
-            available_cpu -= task['resources']['cpu']
-            start_time = current_time
-            # finish_time = current_time + self.estimate_simulation_time(task, task['resources']['cpu'])
-            finish_time = current_time + self.hist_data.estimate_time(task = task)
-            heapq.heappush(ongoing_task, (finish_time, task['resources']['cpu'], task['task_id'], task['name']))
+    #         # start a new one
+    #         available_cpu -= task['resources']['cpu']
+    #         start_time = current_time
+    #         # finish_time = current_time + self.hist_data.estimate_time(task = task)
+    #         finish_time = current_time + task['total_runtime']
+    #         heapq.heappush(ongoing_task, (finish_time, task['resources']['cpu'], task['task_id'], task['name']))
 
-            # 记录任务的开始时间和其他信息
-            running_seq.append({
-                'name': task['name'],
-                'task_id': task['task_id'],
-                'start_time': start_time,
-                'finish_time': None,  # 将在任务完成时更新
-                'total_runtime': None  # 将在任务完成时更新
-            })
+    #         # 记录任务的开始时间和其他信息
+    #         running_seq.append({
+    #             'name': task['name'],
+    #             'task_id': task['task_id'],
+    #             'start_time': start_time,
+    #             'finish_time': None,  # 将在任务完成时更新
+    #             'total_runtime': None  # 将在任务完成时更新
+    #         })
 
-        # 清空剩余的任务并记录完成时间
-        while ongoing_task:
-            next_finish_time, cpus, finished_task_id, task_name = heapq.heappop(ongoing_task)
-            available_cpu += cpus
-            current_time = next_finish_time
-            # 更新任务的完成时间
-            for task_record in running_seq:
-                if task_record['task_id'] == finished_task_id and task_record['name'] == task_name:
-                    task_record['finish_time'] = current_time
-                    task_record['total_runtime'] = current_time - task_record['start_time']
-                    break
+    #     # 清空剩余的任务并记录完成时间
+    #     while ongoing_task:
+    #         next_finish_time, cpus, finished_task_id, task_name = heapq.heappop(ongoing_task)
+    #         available_cpu += cpus
+    #         current_time = next_finish_time
+    #         # 更新任务的完成时间
+    #         for task_record in running_seq:
+    #             if task_record['task_id'] == finished_task_id and task_record['name'] == task_name:
+    #                 task_record['finish_time'] = current_time
+    #                 task_record['total_runtime'] = current_time - task_record['start_time']
+    #                 break
         
-        ind.predict_run_seq = running_seq
-        # 返回总完成时间和任务运行序列
-        return current_time
+    #     ind.predict_run_seq = running_seq
+    #     # 返回总完成时间和任务运行序列
+    #     return current_time
     
     def calculate_completion_time_record_with_running_task(self, ind):
         # TODO need change for multinode and heterogenous
@@ -464,8 +507,8 @@ class evosch2:
             # start a new one
             available_cpu -= task['resources']['cpu']
             start_time = current_time
-            # finish_time = current_time + self.estimate_simulation_time(task, task['resources']['cpu'])
-            finish_time = current_time + self.hist_data.estimate_time(task = task)
+            # finish_time = current_time + self.hist_data.estimate_time(task = task)
+            finish_time = current_time + task['total_runtime']
             heapq.heappush(ongoing_task, (finish_time, task['resources']['cpu'], task['task_id'], task['name']))
 
             # 记录任务的开始时间和其他信息
@@ -497,7 +540,8 @@ class evosch2:
     def calculate_total_time(self, ind:individual):
         total_time = 0
         for task in ind.task_allocation:
-            total_time += self.hist_data.estimate_time(task)
+            # total_time += self.hist_data.estimate_time(task)
+            total_time += task['total_runtime']
         return total_time
             
     
@@ -508,7 +552,7 @@ class evosch2:
         completion_time = 0 ## HPC makespan
 
         total_time = self.calculate_total_time(ind)
-        completion_time = self.calculate_completion_time_record(ind)
+        completion_time = self.calculate_completion_time_record_with_running_task(ind)
         
         # ind.score = 1000/completion_time
         ind.score = -completion_time
@@ -651,7 +695,7 @@ class evosch2:
         
         index = self.list_dict_index(ind.task_allocation,task)
         new_alloc = random.choice([1,2,3,4,5]) + ind.task_allocation[index]['resources']['cpu']
-        if new_alloc <= self.resources_evo['cpu']//2:
+        if new_alloc <= self.resources_evo['cpu']//2: # only allow at constrait resources
             ind.task_allocation[index]['resources']['cpu'] = new_alloc
         
     def opt2(self, ind:individual):
@@ -666,6 +710,7 @@ class evosch2:
         ind.task_allocation.insert(new_index, element)
             
     def process_individual(self,ind1,ind2,crossover_rate, mutation_rate):
+        # logger.info(f"process_infividual:{ind1.individual_id}")
         if random.random() < 0:
             if random.random() < mutation_rate:
                 self.mutate_cpu(ind1)
@@ -698,9 +743,11 @@ class evosch2:
         population = self.population
 
         # self.his_population.update(population)
+        # first we can estimate every task running time
+        self.hist_data.estimate_batch(population)
         scores = [self.fitness(ind) for ind in population]
         population = [population[i] for i in np.argsort(scores)[::-1]]
-        logger.info(f"Generation 0: {population[0]}")
+        # logger.info(f"Generation 0: {population[0]}")
         for gen in range(num_generations):
             # population=population[::-1]
             # population = population[pop_size // 2:] + [ind.copy() for ind in population[pop_size // 2:]]
@@ -712,13 +759,16 @@ class evosch2:
                 for i in range(size//2):
                     futures.append(executor.submit(self.process_individual(next_population[i],next_population[size-i-1],0.8,0.8)))
             concurrent.futures.wait(futures)
-            # population = [future.result() for future in futures]
+            # size = len(next_population)
+            # for i in range(size // 2):
+            #     self.process_individual(next_population[i], next_population[size - i - 1], 0.8, 0.8)
             
+            self.hist_data.estimate_batch(population)
             scores = [self.fitness(ind) for ind in population]
             population = [population[i] for i in np.argsort(scores)[::-1]]
             logger.info(f"Generation {gen}: {population[0].score}")
             population = population[:pop_size]
-        return max(population, key=self.fitness)
+        return max(population, key=lambda ind: ind.score)
         
     
 
