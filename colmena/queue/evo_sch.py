@@ -162,9 +162,11 @@ class historical_data(SingletonClass):
     def __init__(self, methods: Collection[str], queue=None):
         self.historical_data = {}
         self.random_forest_model = {}
+        from sklearnex import patch_sklearn, unpatch_sklearn
+        patch_sklearn()
         for method in methods:
             self.historical_data[method] = []
-            self.random_forest_model[method] = RandomForestRegressor(n_estimators=10, random_state=42, n_jobs=-1)
+            self.random_forest_model[method] = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
         
         self.queue = queue
     
@@ -222,9 +224,10 @@ class historical_data(SingletonClass):
             for feature_values in data:
                 X = df.drop(columns=['time_running', 'method'])
                 y = df['time_running']
-            X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=1, random_state=42)
-            model.fit(X_train, y_train)
-            logger.info(f"method: {method}, random forest regressor score: {model.score(X_test, y_test)}")
+            # X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=1.0, random_state=42)
+            model.fit(X, y)
+            logger.info(f"method: {method}, random forest regressor score: {model.score(X, y)}")
+            # print(f"method: {method}, random forest regressor score: {model.score(X, y)}")
 
     def estimate_time(self, task):
         # use allocate resource to estimate running time
@@ -246,20 +249,49 @@ class historical_data(SingletonClass):
         X = pd.DataFrame([feature_values]).drop(columns=['time_running', 'method'])
         return model.predict(X)[0]
     
+    # def estimate_batch(self, population):
+    #     tasks = []
+    #     for ind in population:
+    #         task_allocation = ind.task_allocation
+    #         tasks.extend(task_allocation)
+
+    #     feature_values = []
+    #     for task in tasks:
+    #         result: Result = self.queue.result_list[task['task_id']]
+    #         method = task['name']
+    #         model = self.random_forest_model[method]
+    #         feature_values.append((task, result, model))
+
+    #     def estimate_task_time(task, result, model):
+    #         feature_values = {}
+    #         for feature in self.features:
+    #             value = result
+    #             for key in feature.split('.'):
+    #                 if isinstance(value, dict):
+    #                     value = value.get(key)
+    #                     break
+    #                 else:
+    #                     value = getattr(value, key)
+    #             if key in task['resources']:
+    #                 value = task['resources'][key]
+    #             feature_values[feature] = value
+    #         X = pd.DataFrame([feature_values]).drop(columns=['time_running', 'method'])
+    #         return model.predict(X)[0]
+
+    #     # with concurrent.futures.ThreadPoolExecutor() as executor:
+    #     #     results = executor.map(lambda x: estimate_task_time(*x), feature_values)
+
+    #     results = []
+    #     for feature_value in feature_values:
+    #         result = estimate_task_time(*feature_value)
+    #         results.append(result)
+
+    #     for task, runtime in zip(tasks, results):
+    #         task['total_runtime'] = runtime
+    #         # logger.info(f"predict runtime:{runtime}")
+
     def estimate_batch(self, population):
-        tasks = []
-        for ind in population:
-            task_allocation = ind.task_allocation
-            tasks.extend(task_allocation)
-
-        feature_values = []
-        for task in tasks:
-            result: Result = self.queue.result_list[task['task_id']]
-            method = task['name']
-            model = self.random_forest_model[method]
-            feature_values.append((task, result, model))
-
-        def estimate_task_time(task, result, model):
+        def extract_feature_values(task, result):
             feature_values = {}
             for feature in self.features:
                 value = result
@@ -272,18 +304,42 @@ class historical_data(SingletonClass):
                 if key in task['resources']:
                     value = task['resources'][key]
                 feature_values[feature] = value
-            X = pd.DataFrame([feature_values]).drop(columns=['time_running', 'method'])
-            return model.predict(X)[0]
-
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            results = executor.map(lambda x: estimate_task_time(*x), feature_values)
-
-        for task, runtime in zip(tasks, results):
-            task['total_runtime'] = runtime
-            
-            
+            return feature_values
         
-        
+        tasks_by_model = {}  # 以模型为键，将任务分组存储
+        for ind in population:
+            task_allocation = ind.task_allocation
+            for task in task_allocation:
+                model_name = task['name']
+                if model_name not in tasks_by_model:
+                    tasks_by_model[model_name] = []
+                tasks_by_model[model_name].append(task)
+
+        for model_name, tasks in tasks_by_model.items():
+            model = self.random_forest_model[model_name]  # 获取对应的模型
+
+            feature_values = []
+            for task in tasks:
+                result: Result = self.queue.result_list[task['task_id']]
+                feature_dict = extract_feature_values(task,result)
+                feature_values.append(feature_dict)
+
+            X = pd.DataFrame(feature_values).drop(columns=['time_running', 'method'])
+            predictions = model.predict(X)
+
+            for task, runtime in zip(tasks, predictions):
+                task['total_runtime'] = runtime
+                # logger.info(f"Predicted runtime for task {task['task_id']}: {runtime}")
+
+    # def estimate_batch(self, population):
+    #     # compare to estimate time cost
+    #     tasks = []
+    #     for ind in population:
+    #         task_allocation = ind.task_allocation
+    #         tasks.extend(task_allocation)
+    #     for task in tasks:
+    #         task['total_runtime'] = 10
+            
 
 
 class evosch2:
@@ -457,6 +513,7 @@ class evosch2:
         # TODO need change for multinode and heterogenous
         available_cpu = self.resources_evo['cpu']
         current_time = time.time()
+        record = current_time
         ongoing_task = []
         running_seq = []  # 记录任务执行的顺序和时间
         
@@ -535,7 +592,7 @@ class evosch2:
         
         ind.predict_run_seq = running_seq
         # 返回总完成时间和任务运行序列
-        return current_time
+        return current_time-record
     
     def calculate_total_time(self, ind:individual):
         total_time = 0
