@@ -189,7 +189,7 @@ class historical_data(SingletonClass):
                     value = getattr(value, key)
                 # if value is None:
                 #     break
-            feature_values[key] = value
+            feature_values[feature] = value
         self.add_data(feature_values)
     
     def get_features_from_his_json(self, his_json:Union[str, list[str]]):
@@ -209,10 +209,11 @@ class historical_data(SingletonClass):
                     
     def random_forest_train(self):
         for method in self.historical_data:
+            logger.info(f"train:{method} model")
             data = self.historical_data[method]
             df = pd.DataFrame(data)
             df.dropna(inplace=True)
-            if len(data) == 0:
+            if len(data) < 5:
                 continue
             model = self.random_forest_model[method]
 
@@ -221,9 +222,9 @@ class historical_data(SingletonClass):
             for feature_values in data:
                 X = df.drop(columns=['time_running', 'method'])
                 y = df['time_running']
-            X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.9, random_state=42)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=1, random_state=42)
             model.fit(X_train, y_train)
-            print(f"method: {method}, random forest regressor score: {model.score(X_test, y_test)}")
+            logger.info(f"method: {method}, random forest regressor score: {model.score(X_test, y_test)}")
 
     def estimate_time(self, task):
         method = task['name']
@@ -288,7 +289,7 @@ class evosch2:
         all_tasks = self.at.get_all()
         for name, ids in all_tasks.items():
             if len(ids) > 0:
-                if len(self.hist_data.historical_data[name])<2: # no data for train
+                if len(self.hist_data.historical_data[name])<5: # no data for train
                     new_task = {
                         "name":name,
                         "task_id": ids[0],
@@ -692,14 +693,14 @@ class evosch2:
 
         # resources = self.get_resources()
         # population = self.generate_population(pop_size)
-        # logger.info(f"Starting GA with available tasks: {self.at.get_all()}")
+        logger.info(f"Starting GA with available tasks: {self.at.get_all()}")
         pop_size = len(self.population)
         population = self.population
 
         # self.his_population.update(population)
         scores = [self.fitness(ind) for ind in population]
         population = [population[i] for i in np.argsort(scores)[::-1]]
-        # logger.info(f"Generation 0: {population[0]}")
+        logger.info(f"Generation 0: {population[0]}")
         for gen in range(num_generations):
             # population=population[::-1]
             # population = population[pop_size // 2:] + [ind.copy() for ind in population[pop_size // 2:]]
@@ -715,7 +716,7 @@ class evosch2:
             
             scores = [self.fitness(ind) for ind in population]
             population = [population[i] for i in np.argsort(scores)[::-1]]
-            print(f"Generation {gen}: {population[0].score}")
+            logger.info(f"Generation {gen}: {population[0].score}")
             population = population[:pop_size]
         return max(population, key=self.fitness)
         
