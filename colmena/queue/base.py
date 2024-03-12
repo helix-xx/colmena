@@ -75,7 +75,6 @@ class ColmenaQueues:
         self.role = QueueRole.ANY
         
         # available task for evosch, YXX
-        self.submit_time_out_event = Event()
         self._add_task_flag = Event()
         self._add_task_lock = Lock()
         self._add_task_flag.set()
@@ -87,6 +86,7 @@ class ColmenaQueues:
             available_task[method] = []
         self._available_tasks = evo_sch.available_task(available_task)
         
+        self.evosch_lock = threading.lock()
         self.evosch:evo_sch.evosch2 = evo_sch.evosch2(resources=available_resources, at=self._available_tasks, hist_data=historical_data)
         self.best_ind = None
         # trace task submit seq
@@ -246,21 +246,14 @@ class ColmenaQueues:
         logger.info(f'Client received a {result_obj.method} result with topic {topic}, restore resources:remain resource is {self.evosch.resources}')
         
         if self.best_ind.task_allocation:        
+            # resume some resource and continue submit task
             self.trigger_submit_task(self.best_ind)
         else:
+            # now we have room for thinker put task in queue
             self._add_task_flag.set()
             self.timer_trigger()
             
         return result_obj
-    
-    # def add_hist(self, topic: str, task_id: str, task_info: dict):
-    #     """add historical data to the queue
-    #         inputs data, running time
-    #     """
-    #     self.evosch.historical_data[topic][task_id] = task_info
-    #     pass
-
-    
 
     def send_inputs(self,
                     *input_args: Any,
@@ -335,11 +328,9 @@ class ColmenaQueues:
             logger.info(f'Client sent a {method} task with topic {topic}.')
             self.result_list[result.task_id] = result
             # detect the capacity
-            if self._available_tasks.get_total_nums() >= self._available_task_capacity:
-                logger.info(f'Client reach the capacity.')
-                self._add_task_flag.clear() # TODO for now we disable it to run the test
-            # judge condition and trigger evo_sch
-            # self.trigger_evo_sch()
+            # if self._available_tasks.get_total_nums() >= self._available_task_capacity:
+            #     logger.info(f'Client reach the capacity.')
+            #     self._add_task_flag.clear() # TODO for now we disable it to run the test
         self.timer_trigger()
         
         
@@ -361,7 +352,6 @@ class ColmenaQueues:
         #TODO need modify for multipul resources
         while len(best_ind.task_allocation) > 0:
             task = best_ind.task_allocation[0]
-            predict_task = best_ind.predict_run_seq[0]
             if not_enough_resource:
                 break
             # for key, value in task['resources'].items():
@@ -376,7 +366,9 @@ class ColmenaQueues:
                 logger.info(f'submit task to queue, remain resource is {self.evosch.resources}, consume resource is {key,value}')
                 self.evosch.resources[key] -= value
                 best_ind.task_allocation.pop(0)
-                best_ind.predict_run_seq.pop(0)
+                predict_task = best_ind.predict_run_seq.pop(0)
+                while predict_task['task_id'] != task['task_id']:
+                    predict_task = best_ind.predict_run_seq.pop(0)
                 self.evosch.at.remove_task_id(task_name=task['name'], task_id=task['task_id'])
                 # refresh the predict task information
                 predict_task['start_time'] = time.time()
@@ -399,38 +391,40 @@ class ColmenaQueues:
             result (Result): _description_
             topic (str, optional): _description_. Defaults to 'default'.
         """
-        if self._available_tasks.get_total_nums() ==0:
+        if self.evosch_lock.acquire(blocking=False):
+            # only one thread could trigger this
+            if self._available_tasks.get_total_nums() ==0:
+                return
+            ## add condition here to trigger evo_sch
+            # condition 1: the task is submitted to the queue, and after task submit timeout
+            # condition 2: the task capacity is full
+            # how to get the perferct timeming to trigger evo_sch and submit task
+            # while thinker stop submit task, add event and lock at task submitter
+            # while the best_ind is better than before(while each task submit and detect the best_ind)
+            # wait for a certain time, then trigger evo_sch
+            if self._add_task_flag.is_set() is False:
+                # get ind and submit task on the sch order and resources
+                # drop submitted task and record resources
+                logger.info(f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}')
+                logger.info(f'result list length is {len(self.result_list)}')
+                if self.evosch.resources['cpu']>=16:
+                    self.evosch.population = self.evosch.generate_population(100)
+                    self.best_ind = self.evosch.run_ga(100) # parameter may need modify
+                    self.trigger_submit_task(self.best_ind)
+                else:
+                    logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
+            if self._add_task_flag.is_set() is True:
+                logger.info(f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
+                logger.info(f'result list length is {len(self.result_list)}')
+                if self.evosch.resources['cpu']>=16:
+                    self.evosch.population = self.evosch.generate_population(100)
+                    self.best_ind = self.evosch.run_ga(100) # parameter may need modify
+                    self.trigger_submit_task(self.best_ind)
+                else:
+                    logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
+        else:
+            # skip trigger, now evosch is running
             return
-        ## add condition here to trigger evo_sch
-        # condition 1: the task is submitted to the queue
-        # condition 2: the task capacity is full
-        # how to get the perferct timeming to trigger evo_sch and submit task
-        # while thinker stop submit task, add event and lock at task submitter
-        # while the best_ind is better than before(while each task submit and detect the best_ind)
-        # wait for a certain time, then trigger evo_sch
-        # Note: this sch is conflict with resource allocate, we need a resource controller to control the resource
-        if self._add_task_flag.is_set() is False:
-            # get ind and submit task on the sch order and resources
-            # drop submitted task and record resources
-            logger.info(f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}')
-            logger.info(f'result list length is {len(self.result_list)}')
-            if self.evosch.resources['cpu']>=16:
-                self.evosch.population = self.evosch.generate_population(100)
-                self.best_ind = self.evosch.run_ga(10) # parameter may need modify
-                self.trigger_submit_task(self.best_ind)
-            else:
-                logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
-        if self._add_task_flag.is_set() is True:
-        # if self.submit_time_out_event.is_set():
-        #     self.submit_time_out_event.clear()
-            logger.info(f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
-            logger.info(f'result list length is {len(self.result_list)}')
-            if self.evosch.resources['cpu']>=16:
-                self.evosch.population = self.evosch.generate_population(100)
-                self.best_ind = self.evosch.run_ga(10) # parameter may need modify
-                self.trigger_submit_task(self.best_ind)
-            else:
-                logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
 
     def wait_until_done(self, timeout: Optional[float] = None):
         """Wait until all out-going tasks have completed

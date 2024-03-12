@@ -527,7 +527,8 @@ class evosch2:
                     'task_id': task['task_id'],
                     'start_time': task['start_time'],
                     'finish_time': task['finish_time'],  # 将在任务完成时更新
-                    'total_runtime': task['total_runtime']  # 将在任务完成时更新
+                    'total_runtime': task['total_runtime'],  # 将在任务完成时更新
+                    'resources': task['resources']
                 })
 
         for task in ind.task_allocation:
@@ -825,7 +826,9 @@ class evosch2:
             population = [population[i] for i in np.argsort(scores)[::-1]]
             logger.info(f"Generation {gen}: {population[0].score}")
             population = population[:pop_size]
-        return max(population, key=lambda ind: ind.score)
+        best_ind = max(population, key=lambda ind: ind.score)
+        logger.info(f"Best ind:{best_ind}")
+        return best_ind
         
     
 
