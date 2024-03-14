@@ -382,6 +382,7 @@ class evosch2:
         detect if there is task not in historical data
         without historical data, estimate method cannot work, we need run them first, and record the historical data to train the model
         return the individual contain no record task
+        # get all node resource or get user predifine resource
         '''
         task_queue = []
         predict_running_seq = []
@@ -389,11 +390,13 @@ class evosch2:
         for name, ids in all_tasks.items():
             if len(ids) > 0:
                 if len(self.hist_data.historical_data[name])<5: # no data for train
+                    cpu = getattr(self.hist_data.queue.result_list[ids[0]].resources,'cpu')
                     new_task = {
                         "name":name,
                         "task_id": ids[0],
                         "resources":{
-                            "cpu": self.get_resources()['cpu']
+                            # "cpu": self.get_resources()['cpu']
+                            "cpu": cpu
                         }
                     }
                     task_queue.append(new_task)
@@ -626,7 +629,7 @@ class evosch2:
         all_tasks = self.at.get_all()
         population = []
         if self.resources_evo['cpu']>16:
-            for _ in range(population_size):
+            for _ in range(population_size//3+1):
                 ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
                 
                 task_queue = []
@@ -646,7 +649,7 @@ class evosch2:
                 ind.task_allocation = task_queue
                 population.append(ind)
             
-        for _ in range(population_size):
+        for _ in range(population_size//3+1):
             ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
             
             task_queue = []
@@ -658,6 +661,27 @@ class evosch2:
                         "resources":{
                             # "cpu": random.randint(1,16)
                             "cpu": 1
+                        }
+                    }
+                    task_queue.append(new_task)
+            random.shuffle(task_queue)
+        
+            ind.task_allocation = task_queue
+            population.append(ind)
+        
+        for _ in range(population_size//3+1):
+            ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
+            
+            task_queue = []
+            for name, ids in all_tasks.items():
+                for task_id in ids:
+                    cpu = getattr(self.hist_data.queue.result_list[task_id].resources,'cpu')
+                    new_task = {
+                        "name":name,
+                        "task_id": task_id,
+                        "resources":{
+                            # "cpu": random.randint(1,16)
+                            "cpu": cpu
                         }
                     }
                     task_queue.append(new_task)
