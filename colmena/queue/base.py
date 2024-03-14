@@ -86,7 +86,7 @@ class ColmenaQueues:
             available_task[method] = []
         self._available_tasks = evo_sch.available_task(available_task)
         
-        self.evosch_lock = threading.lock()
+        self.evosch_lock = threading.Lock()
         self.evosch:evo_sch.evosch2 = evo_sch.evosch2(resources=available_resources, at=self._available_tasks, hist_data=historical_data)
         self.best_ind = None
         # trace task submit seq
@@ -393,36 +393,42 @@ class ColmenaQueues:
         """
         if self.evosch_lock.acquire(blocking=False):
             # only one thread could trigger this
-            if self._available_tasks.get_total_nums() ==0:
-                return
-            ## add condition here to trigger evo_sch
-            # condition 1: the task is submitted to the queue, and after task submit timeout
-            # condition 2: the task capacity is full
-            # how to get the perferct timeming to trigger evo_sch and submit task
-            # while thinker stop submit task, add event and lock at task submitter
-            # while the best_ind is better than before(while each task submit and detect the best_ind)
-            # wait for a certain time, then trigger evo_sch
-            if self._add_task_flag.is_set() is False:
-                # get ind and submit task on the sch order and resources
-                # drop submitted task and record resources
-                logger.info(f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}')
-                logger.info(f'result list length is {len(self.result_list)}')
-                if self.evosch.resources['cpu']>=16:
-                    self.evosch.population = self.evosch.generate_population(100)
-                    self.best_ind = self.evosch.run_ga(100) # parameter may need modify
-                    self.trigger_submit_task(self.best_ind)
-                else:
-                    logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
-            if self._add_task_flag.is_set() is True:
-                logger.info(f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
-                logger.info(f'result list length is {len(self.result_list)}')
-                if self.evosch.resources['cpu']>=16:
-                    self.evosch.population = self.evosch.generate_population(100)
-                    self.best_ind = self.evosch.run_ga(100) # parameter may need modify
-                    self.trigger_submit_task(self.best_ind)
-                else:
-                    logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
+            logger.info("evosch_lock acquire")
+            try:
+                if self._available_tasks.get_total_nums() ==0:
+                    return
+                ## add condition here to trigger evo_sch
+                # condition 1: the task is submitted to the queue, and after task submit timeout
+                # condition 2: the task capacity is full
+                # how to get the perferct timeming to trigger evo_sch and submit task
+                # while thinker stop submit task, add event and lock at task submitter
+                # while the best_ind is better than before(while each task submit and detect the best_ind)
+                # wait for a certain time, then trigger evo_sch
+                if self._add_task_flag.is_set() is False:
+                    # get ind and submit task on the sch order and resources
+                    # drop submitted task and record resources
+                    logger.info(f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}')
+                    logger.info(f'result list length is {len(self.result_list)}')
+                    if self.evosch.resources['cpu']>=16:
+                        self.evosch.population = self.evosch.generate_population(100)
+                        self.best_ind = self.evosch.run_ga(100) # parameter may need modify
+                        self.trigger_submit_task(self.best_ind)
+                    else:
+                        logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
+                if self._add_task_flag.is_set() is True:
+                    logger.info(f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
+                    logger.info(f'result list length is {len(self.result_list)}')
+                    if self.evosch.resources['cpu']>=16:
+                        self.evosch.population = self.evosch.generate_population(100)
+                        self.best_ind = self.evosch.run_ga(100) # parameter may need modify
+                        self.trigger_submit_task(self.best_ind)
+                    else:
+                        logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
+            finally:
+                self.evosch_lock.release()
+                logger.info("evosch_lock release")
         else:
+            logger.info("evosch_lock acquire fail, evosch is running")
             # skip trigger, now evosch is running
             return
 

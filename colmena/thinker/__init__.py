@@ -79,7 +79,7 @@ def result_processor(func: Optional[Callable] = None, topic: str = 'default'):
     return decorator(func)
 
 
-def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_type: str, n_slots: Union[int, str]):
+def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_type: str, n_slots: Union[int, str], enable_allocate: bool):
     """Wrapper function for task submission agents"""
     # Determine the number of threads
     if not isinstance(n_slots, int):
@@ -93,7 +93,10 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
     while not thinker.done.is_set():
         # Wait until resources are free or thinker.done is set
         ## YXX drop resource counter here
-        acq_success = thinker.rec.acquire(task_type, n_slots, cancel_if=thinker.done)
+        if enable_allocate:
+            acq_success = thinker.rec.acquire(task_type, n_slots, cancel_if=thinker.done)
+        else:
+            acq_success = True
         if acq_success:
         ## add timer, if time out, that means no more task to submit, trigger evoscheduler
         # if True:
@@ -111,7 +114,7 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
             
 
 
-def task_submitter(func: Optional[Callable] = None, task_type: str = None, n_slots: Union[int, str] = 1):
+def task_submitter(func: Optional[Callable] = None, task_type: str = None, n_slots: Union[int, str] = 1, enable_allocate: bool=True):
     """Decorator that builds agents which respond to computing resources becoming available
 
     Decorated functions should assume that resources are available and reserved when the function is called
@@ -123,7 +126,7 @@ def task_submitter(func: Optional[Callable] = None, task_type: str = None, n_slo
     """
 
     def decorator(f: Callable):
-        output = partial(_task_submitter_agent, process_func=f, task_type=task_type, n_slots=n_slots)
+        output = partial(_task_submitter_agent, process_func=f, task_type=task_type, n_slots=n_slots, enable_allocate=enable_allocate)
         output = agent(output)
         output._colmena_agent_type = 'task_submitter'
         return update_wrapper(output, f)

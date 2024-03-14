@@ -752,24 +752,25 @@ class evosch2:
         task = max(ind.predict_run_seq, key=lambda x:x['total_runtime'])
         
         index = self.list_dict_index(ind.task_allocation,task)
-        new_alloc = random.choice([1,2,3,4,5]) + ind.task_allocation[index]['resources']['cpu']
-        if new_alloc <= self.resources_evo['cpu']//2: # only allow at constrait resources
-            ind.task_allocation[index]['resources']['cpu'] = new_alloc
+        # task may in running, so we need to check if it is in the task allocation
+        if index:
+            new_alloc = random.choice([1,2,3,4,5]) + ind.task_allocation[index]['resources']['cpu']
+            if new_alloc <= self.resources_evo['cpu']//2: # only allow at constrait resources
+                ind.task_allocation[index]['resources']['cpu'] = new_alloc
         
     def opt2(self, ind:individual):
         ## advance the latest task order
         task = max(ind.predict_run_seq, key=lambda x:x['finish_time'])
         index = self.list_dict_index(ind.task_allocation,task)
-        if index <= 0:
-            return
-        new_index = random.randrange(0, index)
-        
-        element = ind.task_allocation.pop(index)
-        ind.task_allocation.insert(new_index, element)
+        # task may in running, so we need to check if it is in the task allocation
+        if index:
+            new_index = random.randrange(0, index)
+            element = ind.task_allocation.pop(index)
+            ind.task_allocation.insert(new_index, element)
             
     def process_individual(self,ind1,ind2,crossover_rate, mutation_rate):
         # logger.info(f"process_infividual:{ind1.individual_id}")
-        if random.random() < 0:
+        if random.random() < 0.5:
             if random.random() < mutation_rate:
                 self.mutate_cpu(ind1)
             elif random.random() < mutation_rate:
@@ -827,6 +828,7 @@ class evosch2:
             logger.info(f"Generation {gen}: {population[0].score}")
             population = population[:pop_size]
         best_ind = max(population, key=lambda ind: ind.score)
+        logger.info(f"score of all ind:{scores}")
         logger.info(f"Best ind:{best_ind}")
         return best_ind
         
