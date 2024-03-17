@@ -405,7 +405,10 @@ class evosch2:
                         'task_id': ids[0],
                         'start_time': 0,
                         'finish_time': None,  
-                        'total_runtime': 10 ** 7 # 无意义值  
+                        'total_runtime': 10 ** 7, # 无意义值
+                        'resources':{
+                            'cpu': cpu
+                        }  
                     })
         ind = individual(tasks_nums=len(task_queue),total_resources=self.get_resources())
         ind.task_allocation = task_queue
