@@ -403,7 +403,7 @@ class evosch2:
                     predict_running_seq.append({
                         'name': name,
                         'task_id': ids[0],
-                        'start_time': 0,
+                        'start_time': None,
                         'finish_time': None,  
                         'total_runtime': 10 ** 7, # 无意义值
                         'resources':{
@@ -833,6 +833,10 @@ class evosch2:
         self.hist_data.estimate_batch(population)
         scores = [self.fitness(ind) for ind in population]
         population = [population[i] for i in np.argsort(scores)[::-1]]
+        # only one task , submit directly
+        if self.at.get_total_nums() == 1:
+            logger.info(f"Only one task, submit directly")
+            return population[0]
         # logger.info(f"Generation 0: {population[0]}")
         for gen in range(num_generations):
             # population=population[::-1]

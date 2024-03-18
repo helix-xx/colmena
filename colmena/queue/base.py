@@ -358,22 +358,31 @@ class ColmenaQueues:
             key = 'cpu'
             value = task['resources']['cpu']
             if self.evosch.resources[key] < value:
-                logger.info(f'Client trigger submit task, resource is not enough, wait for resource')
+                logger.info(f'Client trigger submit task, resource is not enough, submit again after some task completed')
                 not_enough_resource = True
                 # break # wait for resource
             else:
                 # logger.info(f'submit task to queue, remain resource is {self.evosch.resources}, consume resource is {task["resources"]}')
-                logger.info(f'submit task to queue, remain resource is {self.evosch.resources}, consume resource is {key,value}')
+                logger.info(f"submit task {task['task_id']}to queue, remain resource is {self.evosch.resources}, consume resource is {key,value}")
                 self.evosch.resources[key] -= value
                 best_ind.task_allocation.pop(0)
-                predict_task = best_ind.predict_run_seq.pop(0)
-                while predict_task['task_id'] != task['task_id']:
-                    predict_task = best_ind.predict_run_seq.pop(0)
+                # predict_task = best_ind.predict_run_seq.pop(0)
+                # while predict_task['task_id'] != task['task_id']:
+                #     predict_task = best_ind.predict_run_seq.pop(0)
                 self.evosch.at.remove_task_id(task_name=task['name'], task_id=task['task_id'])
                 # refresh the predict task information
-                predict_task['start_time'] = time.time()
+                # predict_task['start_time'] = time.time()
+                
+                predict_task = {
+                'name': task['name'],
+                'task_id': task['task_id'],
+                'start_time': time.time(),
+                'finish_time': None,  
+                'total_runtime': task['total_runtime'],  
+                'resources': task['resources']
+                }
                 predict_task['finish_time'] = predict_task['start_time'] + predict_task['total_runtime']
-                self.evosch.running_task.append(predict_task)
+                self.evosch.running_task.append(running_task)
                 # pop the task from available task list
                 result = self.result_list.pop(task['task_id'])
                 result.inputs[1]['cpu'] = value 
@@ -383,6 +392,11 @@ class ColmenaQueues:
                 topic = result.topic
                 self._send_request(result.json(exclude_none=True), topic)
                 # logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
+                
+        # task not allocate, trigger evo_sch
+        # in case that only one task is submitted for collect data for predict model 
+        if self.evosch.at.get_total_nums() > 0:
+            self.timer_trigger()
     
     def trigger_evo_sch(self):
         """Conditions that trigger scheduling and submission of tasks
