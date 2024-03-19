@@ -175,12 +175,23 @@ class historical_data(SingletonClass):
         
         self.queue = queue
     
-    def get_child_task(methods):
+    def get_child_task(self, methods):
+        submit_task_seq = deepcopy(self.submit_task_seq)
+        complete_task_seq = deepcopy(self.complete_task_seq)
+        whole_seq = submit_task_seq + complete_task_seq
+        whole_seq.sort(key=lambda x:x['time'])
+        now_submit = {}
+        pre_complete = {}
         for method in methods:
-            pass
+            now_submit[task[method]]=0
+            pre_complete[task[method]]=0
+        while(whole_seq):
+            task = whole_seq.pop(0)
+            if task["type"]=="submit":
+                now_submit[task["method"]]
         pass
     
-    def get_child_task_time():
+    def get_child_task_time(self, ):
         pass
     
     def add_data(self, feature_values: dict[str, Any]):
@@ -351,19 +362,21 @@ class evosch2:
         predict_running_seq = []
         all_tasks = self.at.get_all()
         for name, ids in all_tasks.items():
-            if len(ids) > 0:
-                avail = len(ids)
-                hist = len(self.hist_data.historical_data[name])
+            avail = len(ids)
+            hist = len(self.hist_data.historical_data[name])
+            if (hist < 5) and (avail > 0):
+
                 predifine_cpu = getattr(self.hist_data.queue.result_list[ids[0]].resources,'cpu')
                 cpu_lower_bound = max(2, predifine_cpu//2)
                 cpu_upper_bound = min(self.resources_evo['cpu']//2, predifine_cpu*2)
                 sample_nums = min((total_nums - hist),avail)
                 choices = np.linspace(cpu_lower_bound, cpu_upper_bound, num=sample_nums, endpoint=True, retstep=False, dtype=int)
                 # if len(self.hist_data.historical_data[name])<5: # no data for train
-                for cpu in choices:
+                for i in range(len(choices)):
+                    cpu = int(choices[i])
                     new_task = {
                         "name":name,
-                        "task_id": ids[0],
+                        "task_id": ids[i],
                         "resources":{
                             # "cpu": self.get_resources()['cpu']
                             "cpu": cpu
@@ -373,7 +386,7 @@ class evosch2:
                     task_queue.append(new_task)
                     predict_running_seq.append({
                         'name': name,
-                        'task_id': ids[0],
+                        'task_id': ids[i],
                         'start_time': None,
                         'finish_time': None,  
                         'total_runtime': 10 ** 7, # 无意义值

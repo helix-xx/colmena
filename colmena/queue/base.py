@@ -244,7 +244,7 @@ class ColmenaQueues:
             
         # add history in evo_sch
         if result_obj.success:
-            self.evosch.hist_data.complete_task_seq.append({"method":result_obj.method, "topic":topic, "task_id":result_obj.task_id, "time":time.time()})
+            self.evosch.hist_data.complete_task_seq.append({"method":result_obj.method, "topic":topic, "task_id":result_obj.task_id, "time":time.time(), "type":"complete"})
             self.evosch.hist_data.get_features_from_result_object(result_obj)
         else:
             for item in self.evosch.hist_data.submit_task_seq:
@@ -333,7 +333,7 @@ class ColmenaQueues:
         ## add to available task list YXX, under this lock agent cant submit task
         with self._add_task_lock:
             self._available_tasks.add_task_id(task_name=method, task_id=result.task_id)
-            self.evosch.hist_data.submit_task_seq.append({"method":method, "topic":topic, "task_id":result.task_id, "time":time.time()})
+            self.evosch.hist_data.submit_task_seq.append({"method":method, "topic":topic, "task_id":result.task_id, "time":time.time(), "type":"submit"})
             logger.info(f'Client sent a {method} task with topic {topic}.')
             self.result_list[result.task_id] = result
             # detect the capacity
