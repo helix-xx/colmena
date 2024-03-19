@@ -381,7 +381,7 @@ class evosch2:
                             # "cpu": self.get_resources()['cpu']
                             "cpu": cpu
                         },
-                        "total_runtime": 10 ** 7
+                        "total_runtime": 1
                     }
                     task_queue.append(new_task)
                     predict_running_seq.append({
@@ -389,7 +389,7 @@ class evosch2:
                         'task_id': ids[i],
                         'start_time': None,
                         'finish_time': None,  
-                        'total_runtime': 10 ** 7, # 无意义值
+                        'total_runtime': 1, # 无意义值
                         'resources':{
                             'cpu': cpu
                         }  
