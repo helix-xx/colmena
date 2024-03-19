@@ -160,6 +160,11 @@ class historical_data(SingletonClass):
     "time_running"]
     
     def __init__(self, methods: Collection[str], queue=None):
+        # submit history and complete history for cal the potential improvement
+        self.submit_task_seq = []
+        self.complete_task_seq = []
+        
+        # his data for predict time runnint 
         self.historical_data = {}
         self.random_forest_model = {}
         from sklearnex import patch_sklearn, unpatch_sklearn
@@ -330,15 +335,6 @@ class historical_data(SingletonClass):
             for task, runtime in zip(tasks, predictions):
                 task['total_runtime'] = runtime
                 # logger.info(f"Predicted runtime for task {task['task_id']}: {runtime}")
-
-    # def estimate_batch(self, population):
-    #     # compare to estimate time cost
-    #     tasks = []
-    #     for ind in population:
-    #         task_allocation = ind.task_allocation
-    #         tasks.extend(task_allocation)
-    #     for task in tasks:
-    #         task['total_runtime'] = 10
             
 
 
@@ -397,7 +393,8 @@ class evosch2:
                         "resources":{
                             # "cpu": self.get_resources()['cpu']
                             "cpu": cpu
-                        }
+                        },
+                        "total_runtime": 10 ** 7
                     }
                     task_queue.append(new_task)
                     predict_running_seq.append({
@@ -632,7 +629,7 @@ class evosch2:
         all_tasks = self.at.get_all()
         population = []
         if self.resources_evo['cpu']>16:
-            for _ in range(population_size//3+1):
+            for _ in range(population_size):
                 ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
                 
                 task_queue = []
@@ -651,54 +648,51 @@ class evosch2:
             
                 ind.task_allocation = task_queue
                 population.append(ind)
-            
-        for _ in range(population_size//3+1):
-            ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
-            
-            task_queue = []
-            for name, ids in all_tasks.items():
-                for task_id in ids:
-                    new_task = {
-                        "name":name,
-                        "task_id": task_id,
-                        "resources":{
-                            # "cpu": random.randint(1,16)
-                            "cpu": 1
-                        }
+        
+        # initial resources minimum
+        ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
+        task_queue = []
+        for name, ids in all_tasks.items():
+            for task_id in ids:
+                new_task = {
+                    "name":name,
+                    "task_id": task_id,
+                    "resources":{
+                        # "cpu": random.randint(1,16)
+                        "cpu": 1
                     }
-                    task_queue.append(new_task)
-            random.shuffle(task_queue)
+                }
+                task_queue.append(new_task)
+        random.shuffle(task_queue)
+        ind.task_allocation = task_queue
+        population.append(ind)
         
-            ind.task_allocation = task_queue
-            population.append(ind)
-        
-        for _ in range(population_size//3+1):
-            ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
-            
-            task_queue = []
-            for name, ids in all_tasks.items():
-                for task_id in ids:
-                    cpu = getattr(self.hist_data.queue.result_list[task_id].resources,'cpu')
-                    new_task = {
-                        "name":name,
-                        "task_id": task_id,
-                        "resources":{
-                            # "cpu": random.randint(1,16)
-                            "cpu": cpu
-                        }
+        # initial resources predifine
+        ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
+        task_queue = []
+        for name, ids in all_tasks.items():
+            for task_id in ids:
+                cpu = getattr(self.hist_data.queue.result_list[task_id].resources,'cpu')
+                new_task = {
+                    "name":name,
+                    "task_id": task_id,
+                    "resources":{
+                        # "cpu": random.randint(1,16)
+                        "cpu": cpu
                     }
-                    task_queue.append(new_task)
-            random.shuffle(task_queue)
-        
-            ind.task_allocation = task_queue
-            population.append(ind)
+                }
+                task_queue.append(new_task)
+        random.shuffle(task_queue)
+    
+        ind.task_allocation = task_queue
+        population.append(ind)
             
         return population 
     
     def mutate_cpu(self,ind:individual):
         ## change resource 
         alloc = random.choice(ind.task_allocation)
-        choice = [-5,-3,-2,-1,1,2,3,5]
+        choice = [-5,-3,-2,-1,0,1,2,3,5]
         new_alloc = alloc['resources']['cpu'] + random.choice(choice)
         
         if new_alloc <= 0:
@@ -784,6 +778,16 @@ class evosch2:
             new_alloc = random.choice([1,2,3,4,5]) + ind.task_allocation[index]['resources']['cpu']
             if new_alloc <= self.resources_evo['cpu']//2: # only allow at constrait resources
                 ind.task_allocation[index]['resources']['cpu'] = new_alloc
+                
+        ## remove resources for shortest task
+        task = min(ind.predict_run_seq, key=lambda x:x['total_runtime'])
+        index = self.list_dict_index(ind.task_allocation,task)
+        # task may in running, so we need to check if it is in the task allocation
+        if index:
+            # for caution, we jsut minus 1
+            new_alloc = ind.task_allocation[index]['resources']['cpu'] - 1
+            if new_alloc >= 1:
+                ind.task_allocation[index]['resources']['cpu'] = new_alloc
         
     def opt2(self, ind:individual):
         ## advance the latest task order
@@ -795,13 +799,24 @@ class evosch2:
             element = ind.task_allocation.pop(index)
             ind.task_allocation.insert(new_index, element)
             
+        ## delay the earliest task order
+        # task = min(ind.predict_run_seq, key=lambda x:x['start_time'])
+        # index = self.list_dict_index(ind.task_allocation,task)
+        # # task may in running, so we need to check if it is in the task allocation
+        # if index:
+        #     new_index = random.randrange(index, len(ind.task_allocation))
+        #     element = ind.task_allocation.pop(index)
+        #     ind.task_allocation.insert(new_index, element)
+            
     def process_individual(self,ind1,ind2,crossover_rate, mutation_rate):
         # logger.info(f"process_infividual:{ind1.individual_id}")
         if random.random() < 0.5:
             if random.random() < mutation_rate:
                 self.mutate_cpu(ind1)
+                self.mutate_cpu(ind2)
             elif random.random() < mutation_rate:
                 self.mutate_seq(ind1)
+                self.mutate_seq(ind2)
                 
             if random.random() < crossover_rate/2:
                 self.crossover_pmx(ind1,ind2)
