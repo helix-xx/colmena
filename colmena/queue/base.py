@@ -241,8 +241,16 @@ class ColmenaQueues:
             if task['task_id'] == result_obj.task_id:
                 self.evosch.running_task.remove(task)
                 break
+            
+        # add history in evo_sch
         if result_obj.success:
+            self.evosch.hist_data.complete_task_seq.append({"method":result_obj.method, "topic":topic, "task_id":result_obj.task_id, "time":time.time()})
             self.evosch.hist_data.get_features_from_result_object(result_obj)
+        else:
+            for item in self.evosch.hist_data.submit_task_seq:
+                if item['task_id'] == result_obj.task_id:
+                    self.evosch.hist_data.submit_task_seq.remove(item)
+                    break
         
         logger.info(f'Client received a {result_obj.method} result with topic {topic}, restore resources:remain resource is {self.evosch.resources}')
         

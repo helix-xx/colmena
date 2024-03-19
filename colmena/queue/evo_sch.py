@@ -175,6 +175,14 @@ class historical_data(SingletonClass):
         
         self.queue = queue
     
+    def get_child_task(methods):
+        for method in methods:
+            pass
+        pass
+    
+    def get_child_task_time():
+        pass
+    
     def add_data(self, feature_values: dict[str, Any]):
         method = feature_values['method']
         # if method not in self.historical_data:
@@ -253,47 +261,6 @@ class historical_data(SingletonClass):
             feature_values[feature] = value
         X = pd.DataFrame([feature_values]).drop(columns=['time_running', 'method'])
         return model.predict(X)[0]
-    
-    # def estimate_batch(self, population):
-    #     tasks = []
-    #     for ind in population:
-    #         task_allocation = ind.task_allocation
-    #         tasks.extend(task_allocation)
-
-    #     feature_values = []
-    #     for task in tasks:
-    #         result: Result = self.queue.result_list[task['task_id']]
-    #         method = task['name']
-    #         model = self.random_forest_model[method]
-    #         feature_values.append((task, result, model))
-
-    #     def estimate_task_time(task, result, model):
-    #         feature_values = {}
-    #         for feature in self.features:
-    #             value = result
-    #             for key in feature.split('.'):
-    #                 if isinstance(value, dict):
-    #                     value = value.get(key)
-    #                     break
-    #                 else:
-    #                     value = getattr(value, key)
-    #             if key in task['resources']:
-    #                 value = task['resources'][key]
-    #             feature_values[feature] = value
-    #         X = pd.DataFrame([feature_values]).drop(columns=['time_running', 'method'])
-    #         return model.predict(X)[0]
-
-    #     # with concurrent.futures.ThreadPoolExecutor() as executor:
-    #     #     results = executor.map(lambda x: estimate_task_time(*x), feature_values)
-
-    #     results = []
-    #     for feature_value in feature_values:
-    #         result = estimate_task_time(*feature_value)
-    #         results.append(result)
-
-    #     for task, runtime in zip(tasks, results):
-    #         task['total_runtime'] = runtime
-    #         # logger.info(f"predict runtime:{runtime}")
 
     def estimate_batch(self, population):
         def extract_feature_values(task, result):
@@ -346,7 +313,7 @@ class evosch2:
         self.his_population = set()
         # self.task_queue_audit = task_queue_audit ## this is hist data, not need it in evosch2, introduce in colmena queue while trigger schduling
         self.resources:dict = resources # this is for management
-        self.resources_evo:dict = resources # this is for evo sch
+        self.resources_evo:dict = resources # this is for evo sch, total resources to consider
         self.hist_data = hist_data
         self.at = at # available task
         # self.population = self.generate_population(population_size)
@@ -373,7 +340,7 @@ class evosch2:
         # detect submit task sequence to choose proper task to run
         pass
     
-    def detect_no_his_task(self):
+    def detect_no_his_task(self, total_nums = 5):
         '''
         detect if there is task not in historical data
         without historical data, estimate method cannot work, we need run them first, and record the historical data to train the model
@@ -385,8 +352,15 @@ class evosch2:
         all_tasks = self.at.get_all()
         for name, ids in all_tasks.items():
             if len(ids) > 0:
-                if len(self.hist_data.historical_data[name])<5: # no data for train
-                    cpu = getattr(self.hist_data.queue.result_list[ids[0]].resources,'cpu')
+                avail = len(ids)
+                hist = len(self.hist_data.historical_data[name])
+                predifine_cpu = getattr(self.hist_data.queue.result_list[ids[0]].resources,'cpu')
+                cpu_lower_bound = max(2, predifine_cpu//2)
+                cpu_upper_bound = min(self.resources_evo['cpu']//2, predifine_cpu*2)
+                sample_nums = min((total_nums - hist),avail)
+                choices = np.linspace(cpu_lower_bound, cpu_upper_bound, num=sample_nums, endpoint=True, retstep=False, dtype=int)
+                # if len(self.hist_data.historical_data[name])<5: # no data for train
+                for cpu in choices:
                     new_task = {
                         "name":name,
                         "task_id": ids[0],
@@ -862,6 +836,7 @@ class evosch2:
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 size = len(next_population)
                 for i in range(size//2):
+                    random.shuffle(next_population)
                     futures.append(executor.submit(self.process_individual(next_population[i],next_population[size-i-1],0.8,0.8)))
             concurrent.futures.wait(futures)
             # size = len(next_population)
