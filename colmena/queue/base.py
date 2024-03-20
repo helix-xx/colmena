@@ -256,11 +256,13 @@ class ColmenaQueues:
         
         if self.best_ind.task_allocation:        
             # resume some resource and continue submit task
-            self.trigger_submit_task(self.best_ind)
+            with self.evosch_lock:
+                self.trigger_submit_task(self.best_ind)
         else:
             # now we have room for thinker put task in queue
             self._add_task_flag.set()
-            self.timer_trigger()
+            if self.evosch.at.get_total_nums() > 0:
+                self.timer_trigger()
             
         return result_obj
 
@@ -361,15 +363,15 @@ class ColmenaQueues:
         #TODO need modify for multipul resources
         while len(best_ind.task_allocation) > 0:
             task = best_ind.task_allocation[0]
-            if not_enough_resource:
-                break
+            # if not_enough_resource:
+            #     break
             # for key, value in task['resources'].items():
             key = 'cpu'
             value = task['resources']['cpu']
             if self.evosch.resources[key] < value:
                 logger.info(f'Client trigger submit task, resource is not enough, submit again after some task completed')
-                not_enough_resource = True
-                # break # wait for resource
+                # not_enough_resource = True
+                break # wait for resource
             else:
                 # logger.info(f'submit task to queue, remain resource is {self.evosch.resources}, consume resource is {task["resources"]}')
                 logger.info(f"submit task {task['task_id']}to queue, remain resource is {self.evosch.resources}, consume resource is {key,value}")
@@ -404,7 +406,7 @@ class ColmenaQueues:
                 
         # task not allocate, trigger evo_sch
         # in case that only one task is submitted for collect data for predict model 
-        if self.evosch.at.get_total_nums() > 0:
+        if self.evosch.at.get_total_nums() > 0 :
             self.timer_trigger()
     
     def trigger_evo_sch(self):
@@ -417,6 +419,7 @@ class ColmenaQueues:
         if self.evosch_lock.acquire(blocking=False):
             # only one thread could trigger this
             logger.info("evosch_lock acquire")
+            # run_flag = False
             try:
                 if self._available_tasks.get_total_nums() ==0:
                     return

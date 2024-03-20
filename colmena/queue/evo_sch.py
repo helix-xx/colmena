@@ -161,15 +161,18 @@ class historical_data(SingletonClass):
     
     def __init__(self, methods: Collection[str], queue=None):
         # submit history and complete history for cal the potential improvement
+        self.methods = methods
         self.submit_task_seq = []
         self.complete_task_seq = []
+        ## total submit / total complete
+        self.trigger_info = []
         
         # his data for predict time runnint 
         self.historical_data = {}
         self.random_forest_model = {}
         from sklearnex import patch_sklearn, unpatch_sklearn
         patch_sklearn()
-        for method in methods:
+        for method in self.methods:
             self.historical_data[method] = []
             self.random_forest_model[method] = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
         
@@ -182,16 +185,63 @@ class historical_data(SingletonClass):
         whole_seq.sort(key=lambda x:x['time'])
         now_submit = {}
         pre_complete = {}
-        for method in methods:
-            now_submit[task[method]]=0
-            pre_complete[task[method]]=0
+        has_submit = False
+        has_complete = False
+        def initialize():
+
+            for method in methods:
+                now_submit[method]=0
+                pre_complete[method]=0
+        def record():
+            self.trigger_info.append({
+                "submit": deepcopy(now_submit),
+                "complete": deepcopy(pre_complete)
+            })
+            initialize()
+        
+        initialize()
+            
         while(whole_seq):
-            task = whole_seq.pop(0)
+            task = whole_seq.pop()
             if task["type"]=="submit":
-                now_submit[task["method"]]
-        pass
+                if has_submit and has_complete:
+                    record()
+                    has_complete = False
+                now_submit[task["method"]]+=1
+                has_submit = True
+            elif has_submit:
+                pre_complete[task["method"]]+=1
+                has_complete = True
+            else:
+                # no submit task after complete task
+                # just pass
+                pass
+         # After processing all tasks, record any remaining tasks
+        if has_submit and has_complete:
+            record()
+        
+        return self.trigger_info
     
-    def get_child_task_time(self, ):
+    # get the last trigger info until all method has trigger submit task
+    def get_closest_trigger_info(self):
+        cloest_trigger_info = []
+        method_flag = {}
+        for method in self.methods:
+            method_flag[method] = False
+        for info in self.trigger_info:
+            cloest_trigger_info.append(info)
+            for method in self.methods:
+                if info["submit"][method] > 0:
+                    method_flag[method] = True
+            if all(method_flag.values()):
+                return cloest_trigger_info
+    
+    def get_child_task_time(self, method):
+        trigger_info = self.get_closest_trigger_info()
+        info = trigger_info.pop()
+        # get each task info from historyical data
+        # add to the individual task allocation 
+        
         pass
     
     def add_data(self, feature_values: dict[str, Any]):
