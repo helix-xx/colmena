@@ -44,6 +44,7 @@ class ColmenaQueues:
                  proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
                  available_task_capacity: Optional[int] = 16,
                 #  estimate_methods: Optional[Dict[str, callable]] = None,
+                 enable_evo = False,
                  available_resources = {"cpu": 64, "gpu": 4, "memory": "128G"}):
         """
         Args:
@@ -67,6 +68,7 @@ class ColmenaQueues:
         """
 
         # Store the list of topics and other simple options
+        self.enable_evo = enable_evo
         self.topics = set(topics)
         self.methods = set(methods)
         self.topics.add('default')
@@ -231,38 +233,40 @@ class ColmenaQueues:
             self._active_tasks.discard(result_obj.task_id)
             if len(self._active_tasks) == 0:
                 self._all_complete.set()
-                
-        # resume resources, key should in inmutable list
+        
         logger.info(f'Client received a {result_obj.method} result with topic {topic}, consume resource is {result_obj.inputs[1]}')
-        for key, value in result_obj.inputs[1].items():
-            if key in ['cpu', 'gpu']:
-                self.evosch.resources[key]+=value
-        for task in self.evosch.running_task:
-            if task['task_id'] == result_obj.task_id:
-                self.evosch.running_task.remove(task)
-                break
-            
-        # add history in evo_sch
-        if result_obj.success:
-            self.evosch.hist_data.complete_task_seq.append({"method":result_obj.method, "topic":topic, "task_id":result_obj.task_id, "time":time.time(), "type":"complete"})
-            self.evosch.hist_data.get_features_from_result_object(result_obj)
-        else:
-            for item in self.evosch.hist_data.submit_task_seq:
-                if item['task_id'] == result_obj.task_id:
-                    self.evosch.hist_data.submit_task_seq.remove(item)
+        
+        if self.enable_evo:
+            # resume resources, key should in inmutable list
+            for key, value in result_obj.inputs[1].items():
+                if key in ['cpu', 'gpu']:
+                    self.evosch.resources[key]+=value
+            for task in self.evosch.running_task:
+                if task['task_id'] == result_obj.task_id:
+                    self.evosch.running_task.remove(task)
                     break
-        
-        logger.info(f'Client received a {result_obj.method} result with topic {topic}, restore resources:remain resource is {self.evosch.resources}')
-        
-        if self.best_ind.task_allocation:        
-            # resume some resource and continue submit task
-            with self.evosch_lock:
-                self.trigger_submit_task(self.best_ind)
-        else:
-            # now we have room for thinker put task in queue
-            self._add_task_flag.set()
-            if self.evosch.at.get_total_nums() > 0:
-                self.timer_trigger()
+                
+            # add history in evo_sch
+            if result_obj.success:
+                self.evosch.hist_data.complete_task_seq.append({"method":result_obj.method, "topic":topic, "task_id":result_obj.task_id, "time":time.time(), "type":"complete"})
+                self.evosch.hist_data.get_features_from_result_object(result_obj)
+            else:
+                for item in self.evosch.hist_data.submit_task_seq:
+                    if item['task_id'] == result_obj.task_id:
+                        self.evosch.hist_data.submit_task_seq.remove(item)
+                        break
+            
+            logger.info(f'Client received a {result_obj.method} result with topic {topic}, restore resources:remain resource is {self.evosch.resources}')
+            
+            if self.best_ind.task_allocation:        
+                # resume some resource and continue submit task
+                with self.evosch_lock:
+                    self.trigger_submit_task(self.best_ind)
+            else:
+                # now we have room for thinker put task in queue
+                self._add_task_flag.set()
+                if self.evosch.at.get_total_nums() > 0:
+                    self.timer_trigger()
             
         return result_obj
 
@@ -332,24 +336,23 @@ class ColmenaQueues:
         )
         result.time_serialize_inputs, proxies = result.serialize()
         
-        ## add to available task list YXX, under this lock agent cant submit task
-        with self._add_task_lock:
-            self._available_tasks.add_task_id(task_name=method, task_id=result.task_id)
-            self.evosch.hist_data.submit_task_seq.append({"method":method, "topic":topic, "task_id":result.task_id, "time":time.time(), "type":"submit"})
-            logger.info(f'Client sent a {method} task with topic {topic}.')
-            self.result_list[result.task_id] = result
-            # detect the capacity
-            # if self._available_tasks.get_total_nums() >= self._available_task_capacity:
-            #     logger.info(f'Client reach the capacity.')
-            #     self._add_task_flag.clear() # TODO for now we disable it to run the test
-        self.timer_trigger()
-        
-        
-        # Push the serialized value to the task server
-        # move this after the task is added to the available task list and decide by scheduler
-        # result.time_serialize_inputs, proxies = result.serialize()
-        # self._send_request(result.json(exclude_none=True), topic)
-        # logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
+        if self.enable_evo:
+            ## add to available task list YXX, under this lock agent cant submit task
+            with self._add_task_lock:
+                self._available_tasks.add_task_id(task_name=method, task_id=result.task_id)
+                self.evosch.hist_data.submit_task_seq.append({"method":method, "topic":topic, "task_id":result.task_id, "time":time.time(), "type":"submit"})
+                logger.info(f'Client sent a {method} task with topic {topic}.')
+                self.result_list[result.task_id] = result
+                # detect the capacity
+                # if self._available_tasks.get_total_nums() >= self._available_task_capacity:
+                #     logger.info(f'Client reach the capacity.')
+                #     self._add_task_flag.clear() # TODO for now we disable it to run the test
+            self.timer_trigger()
+        else:
+            #Push the serialized value to the task server
+            #move this after the task is added to the available task list and decide by scheduler
+            self._send_request(result.json(exclude_none=True), topic)
+            logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
 
         # Store the task ID in the active list
         with self._active_lock:

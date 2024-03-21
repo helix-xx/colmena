@@ -19,6 +19,7 @@ import pickle
 import random
 import concurrent.futures
 import sys
+import os
 import heapq
 from dataclasses import dataclass, field, asdict, is_dataclass
 from colmena.models import Result
@@ -27,7 +28,9 @@ from colmena.models import Result
 from  sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 
-sys.path.append(r"/home/lizz_lab/cse30019698/project/colmena/multisite_/")
+relative_path = "~/project/colmena/multisite_"
+absolute_path = os.path.expanduser(relative_path)
+sys.path.append(absolute_path)
 from my_util.data_structure import *
 
 logger = logging.getLogger(__name__)
@@ -241,7 +244,7 @@ class historical_data(SingletonClass):
         info = trigger_info.pop()
         # get each task info from historyical data
         # add to the individual task allocation 
-        
+        # TODO
         pass
     
     def add_data(self, feature_values: dict[str, Any]):
@@ -709,7 +712,8 @@ class evosch2:
         task_queue = []
         for name, ids in all_tasks.items():
             for task_id in ids:
-                cpu = getattr(self.hist_data.queue.result_list[task_id].resources,'cpu')
+                task = self.hist_data.queue.result_list[task_id]
+                cpu = getattr(task.resources,'cpu')
                 new_task = {
                     "name":name,
                     "task_id": task_id,
@@ -727,6 +731,7 @@ class evosch2:
         return population 
     
     def mutate_cpu(self,ind:individual):
+        ind = ind.copy()
         ## change resource 
         alloc = random.choice(ind.task_allocation)
         choice = [-5,-3,-2,-1,0,1,2,3,5]
@@ -736,8 +741,11 @@ class evosch2:
             alloc['resources']['cpu'] = 1
         else:
             alloc['resources']['cpu'] = new_alloc
+        
+        self.population.append(ind)
     
     def mutate_seq(self,ind:individual):
+        ind = ind.copy()
         ## change task sequence
         index1 = random.randrange(len(ind.task_allocation))
         index2 = random.randrange(len(ind.task_allocation))
@@ -745,9 +753,12 @@ class evosch2:
             index2 = random.randrange(len(ind.task_allocation))
             
         ind.task_allocation[index1], ind.task_allocation[index2] = ind.task_allocation[index2], ind.task_allocation[index1]
+        
+        self.population.append(ind)
     
     
     def crossover_arith_ave(self, ind1:individual, ind2:individual):
+        ind1 = ind1.copy()
         task_avg = [None]*len(ind1.task_allocation)
         for i in range(len(ind1.task_allocation)):
             name = ind1.task_allocation[i]['name']
@@ -759,6 +770,7 @@ class evosch2:
                     "cpu": (ind1.get_resources(name,task_id)['cpu']+ind2.get_resources(name,task_id)['cpu'])//2
             }}
         ind1.task_allocation = task_avg
+        self.population.append(ind1)
     
     def list_dict_found(self, list_dic, dic):
         for i in range(len(list_dic)):
@@ -772,8 +784,10 @@ class evosch2:
                 return i
         return None
 
-    def crossover_pmx(self, ind:individual, ind2:individual):
-        size = len(ind.task_allocation)
+    def crossover_pmx(self, ind1:individual, ind2:individual):
+        ind1 = ind1.copy()
+        ind2 = ind2.copy()
+        size = len(ind1.task_allocation)
         p1, p2 = [0]*size, [0]*size
         
         cxpoint1 = random.randint(0, size-1)
@@ -784,49 +798,56 @@ class evosch2:
         # print(cxpoint1,cxpoint2)
         for i in range(cxpoint1,cxpoint2+1):
             p1[i] = ind2.task_allocation[i]
-            p2[i] = ind.task_allocation[i]
+            p2[i] = ind1.task_allocation[i]
             
         for i in range(size):
             if i < cxpoint1 or i > cxpoint2:
-                ii = ind.task_allocation[i]
+                ii = ind1.task_allocation[i]
                 while self.list_dict_found(p1[cxpoint1:cxpoint2+1],ii):
-                    # ii = ind.task_allocation[p1[cxpoint1:cxpoint2+1].index(ii)]
-                    ii = ind.task_allocation[self.list_dict_index(ind2.task_allocation,ii)]
+                    # ii = ind1.task_allocation[p1[cxpoint1:cxpoint2+1].index(ii)]
+                    ii = ind1.task_allocation[self.list_dict_index(ind2.task_allocation,ii)]
                 p1[i] = ii
                 
                 ii = ind2.task_allocation[i]
                 while self.list_dict_found(p2[cxpoint1:cxpoint2+1],ii):
                     # ii = ind2.task_allocation[p2[cxpoint1:cxpoint2+1].index(ii)]
-                    ii = ind2.task_allocation[self.list_dict_index(ind.task_allocation,ii)]
+                    ii = ind2.task_allocation[self.list_dict_index(ind1.task_allocation,ii)]
                 p2[i] = ii
         
-        ind.task_allocation = p1
+        ind1.task_allocation = p1
         ind2.task_allocation = p2
+        self.population.append(ind1)
+        self.population.append(ind2)
         
     def opt1(self, ind:individual):
+        ind = ind.copy()
         ## add resources for longest task
         # logger.info(f"opt1: {ind.task_allocation}")
         # logger.info(f"opt1: {ind.predict_run_seq}")
-        task = max(ind.predict_run_seq, key=lambda x:x['total_runtime'])
-        
-        index = self.list_dict_index(ind.task_allocation,task)
-        # task may in running, so we need to check if it is in the task allocation
-        if index:
-            new_alloc = random.choice([1,2,3,4,5]) + ind.task_allocation[index]['resources']['cpu']
-            if new_alloc <= self.resources_evo['cpu']//2: # only allow at constrait resources
-                ind.task_allocation[index]['resources']['cpu'] = new_alloc
+        tasks = sorted(ind.predict_run_seq,key=lambda x:x['total_runtime'], reverse=True)
+        # task = max(ind.predict_run_seq, key=lambda x:x['total_runtime'])
+        for i in range(len(tasks)//3):
+            index = self.list_dict_index(ind.task_allocation,tasks[i])
+            # task may in running, so we need to check if it is in the task allocation
+            if index:
+                new_alloc = random.choice([1,2,3,4,5]) + ind.task_allocation[index]['resources']['cpu']
+                if new_alloc <= self.resources_evo['cpu']//2: # only allow at constrait resources
+                    ind.task_allocation[index]['resources']['cpu'] = new_alloc
                 
         ## remove resources for shortest task
-        task = min(ind.predict_run_seq, key=lambda x:x['total_runtime'])
-        index = self.list_dict_index(ind.task_allocation,task)
-        # task may in running, so we need to check if it is in the task allocation
-        if index:
-            # for caution, we jsut minus 1
-            new_alloc = ind.task_allocation[index]['resources']['cpu'] - 1
-            if new_alloc >= 1:
-                ind.task_allocation[index]['resources']['cpu'] = new_alloc
+        # task = min(ind.predict_run_seq, key=lambda x:x['total_runtime'])
+            index = self.list_dict_index(ind.task_allocation,tasks[-i])
+            # task may in running, so we need to check if it is in the task allocation
+            if index:
+                # for caution, we jsut minus 1
+                new_alloc = ind.task_allocation[index]['resources']['cpu'] - 1
+                if new_alloc >= 1:
+                    ind.task_allocation[index]['resources']['cpu'] = new_alloc
+                    
+        self.population.append(ind)
         
     def opt2(self, ind:individual):
+        ind = ind.copy()
         ## advance the latest task order
         task = max(ind.predict_run_seq, key=lambda x:x['finish_time'])
         index = self.list_dict_index(ind.task_allocation,task)
@@ -844,27 +865,50 @@ class evosch2:
         #     new_index = random.randrange(index, len(ind.task_allocation))
         #     element = ind.task_allocation.pop(index)
         #     ind.task_allocation.insert(new_index, element)
+        self.population.append(ind)
             
-    def process_individual(self,ind1,ind2,crossover_rate, mutation_rate):
-        # logger.info(f"process_infividual:{ind1.individual_id}")
-        if random.random() < 0.5:
-            if random.random() < mutation_rate:
-                self.mutate_cpu(ind1)
-                self.mutate_cpu(ind2)
-            elif random.random() < mutation_rate:
-                self.mutate_seq(ind1)
-                self.mutate_seq(ind2)
-                
-            if random.random() < crossover_rate/2:
-                self.crossover_pmx(ind1,ind2)
-            elif random.random() < crossover_rate/2:
-                self.crossover_arith_ave(ind1,ind2)
-            
-        else:
-            self.opt1(ind1)
-            self.opt2(ind1)
+    def opt3(self, ind:individual):
         
+        pass
             
+
+    # old version
+    # def process_individual(self,ind1,ind2,crossover_rate, mutation_rate):
+    #     # logger.info(f"process_infividual:{ind1.individual_id}")
+    #     if random.random() < 0.5:
+    #         if random.random() < mutation_rate:
+    #             self.mutate_cpu(ind1)
+    #             self.mutate_cpu(ind2)
+    #         elif random.random() < mutation_rate:
+    #             self.mutate_seq(ind1)
+    #             self.mutate_seq(ind2)
+                
+    #         elif random.random() < crossover_rate/2:
+    #             self.crossover_arith_ave(ind1,ind2)
+            
+    #     else:
+    #         self.opt1(ind1)
+    #         self.opt2(ind1)
+    
+
+    def process_individual(self):
+        # logger.info(f"process_infividual:{ind1.individual_id}")
+        for ind in self.population:
+            self.opt1(ind)
+            self.opt2(ind)
+            
+    def process_individual_mutate(self,ind1,ind2,crossover_rate=0):
+        self.mutate_cpu(ind1)
+        self.mutate_cpu(ind2)
+
+        self.mutate_seq(ind1)
+        self.mutate_seq(ind2)
+        
+        self.crossover_pmx(ind1,ind2)
+        self.crossover_arith_ave(ind1,ind2)
+            
+    ## TODO test version
+    # we do not extend copied ind for evolution, we copy evoluting ind
     def run_ga(self, num_generations):
         # run no record task
         ind = self.detect_no_his_task()
@@ -878,43 +922,109 @@ class evosch2:
         # population = self.generate_population(pop_size)
         logger.info(f"Starting GA with available tasks: {self.at.get_all()}")
         pop_size = len(self.population)
-        population = self.population
+        # population = self.population
 
         # self.his_population.update(population)
         # first we can estimate every task running time
-        self.hist_data.estimate_batch(population)
-        scores = [self.fitness(ind) for ind in population]
-        population = [population[i] for i in np.argsort(scores)[::-1]]
+        self.hist_data.estimate_batch(self.population)
+        scores = [self.fitness(ind) for ind in self.population]
+        self.population = [self.population[i] for i in np.argsort(scores)[::-1]]
         # only one task , submit directly
         if self.at.get_total_nums() == 1:
             logger.info(f"Only one task, submit directly")
-            return population[0]
+            return self.population[0]
         # logger.info(f"Generation 0: {population[0]}")
+        score = self.population[-1].score
+        logger.info(f"initial score is {score}")
+        new_score = score
         for gen in range(num_generations):
             # population=population[::-1]
             # population = population[pop_size // 2:] + [ind.copy() for ind in population[pop_size // 2:]]
-            population.extend([ind.copy() for ind in population[:pop_size // 2]])
-            next_population = population[:pop_size // 2]
+            # population.extend([ind.copy() for ind in population[:pop_size // 2]])
+            # next_population = population[:pop_size // 2]
+            self.population = self.population[:num_generations]
             futures = []
             with concurrent.futures.ThreadPoolExecutor() as executor:
-                size = len(next_population)
+                random.shuffle(self.population)
+                size = len(self.population)
                 for i in range(size//2):
-                    random.shuffle(next_population)
-                    futures.append(executor.submit(self.process_individual(next_population[i],next_population[size-i-1],0.8,0.8)))
+                    ind1 = self.population[i]
+                    ind2 = self.population[size-i-1]
+                    if (new_score==score):
+                        futures.append(executor.submit(self.process_individual_mutate(ind1, ind2)))
+                    futures.append(executor.submit(self.opt1(ind1)))
+                    futures.append(executor.submit(self.opt1(ind2)))
+                    futures.append(executor.submit(self.opt2(ind1)))
+                    futures.append(executor.submit(self.opt2(ind2)))
+                        
+                        
             concurrent.futures.wait(futures)
             # size = len(next_population)
             # for i in range(size // 2):
             #     self.process_individual(next_population[i], next_population[size - i - 1], 0.8, 0.8)
             
-            self.hist_data.estimate_batch(population)
-            scores = [self.fitness(ind) for ind in population]
-            population = [population[i] for i in np.argsort(scores)[::-1]]
-            logger.info(f"Generation {gen}: {population[0].score}")
-            population = population[:pop_size]
-        best_ind = max(population, key=lambda ind: ind.score)
+            self.hist_data.estimate_batch(self.population)
+            scores = [self.fitness(ind) for ind in self.population]
+            self.population = [self.population[i] for i in np.argsort(scores)[::-1]]
+            new_score = self.population[0].score
+            logger.info(f"Generation {gen}: {self.population[0].score}")
+            self.population = self.population[:pop_size]
+        best_ind = max(self.population, key=lambda ind: ind.score)
         logger.info(f"score of all ind:{scores}")
         logger.info(f"Best ind:{best_ind}")
         return best_ind
+    
+    # def run_ga(self, num_generations):
+    #     # run no record task
+    #     ind = self.detect_no_his_task()
+    #     if len(ind.task_allocation) > 0:
+    #         return ind
+        
+    #     # train random forest model for predict running time
+    #     self.hist_data.random_forest_train()
+
+    #     # resources = self.get_resources()
+    #     # population = self.generate_population(pop_size)
+    #     logger.info(f"Starting GA with available tasks: {self.at.get_all()}")
+    #     pop_size = len(self.population)
+    #     population = self.population
+
+    #     # self.his_population.update(population)
+    #     # first we can estimate every task running time
+    #     self.hist_data.estimate_batch(population)
+    #     scores = [self.fitness(ind) for ind in population]
+    #     population = [population[i] for i in np.argsort(scores)[::-1]]
+    #     # only one task , submit directly
+    #     if self.at.get_total_nums() == 1:
+    #         logger.info(f"Only one task, submit directly")
+    #         return population[0]
+    #     # logger.info(f"Generation 0: {population[0]}")
+    #     for gen in range(num_generations):
+    #         # population=population[::-1]
+    #         # population = population[pop_size // 2:] + [ind.copy() for ind in population[pop_size // 2:]]
+    #         population.extend([ind.copy() for ind in population[:pop_size // 2]])
+    #         next_population = population[:pop_size // 2]
+    #         futures = []
+    #         with concurrent.futures.ThreadPoolExecutor() as executor:
+    #             size = len(next_population)
+    #             for i in range(size//2):
+    #                 random.shuffle(next_population)
+    #                 futures.append(executor.submit(self.process_individual(next_population[i],next_population[size-i-1],0.8,0.8)))
+    #         concurrent.futures.wait(futures)
+    #         # size = len(next_population)
+    #         # for i in range(size // 2):
+    #         #     self.process_individual(next_population[i], next_population[size - i - 1], 0.8, 0.8)
+            
+    #         self.hist_data.estimate_batch(population)
+    #         scores = [self.fitness(ind) for ind in population]
+    #         population = [population[i] for i in np.argsort(scores)[::-1]]
+    #         logger.info(f"Generation {gen}: {population[0].score}")
+    #         population = population[:pop_size]
+    #     self.population=population
+    #     best_ind = max(population, key=lambda ind: ind.score)
+    #     logger.info(f"score of all ind:{scores}")
+    #     logger.info(f"Best ind:{best_ind}")
+    #     return best_ind
         
     
 
