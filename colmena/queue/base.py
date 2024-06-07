@@ -21,13 +21,15 @@ from colmena.queue import evo_sch
 
 logger = logging.getLogger(__name__)
 
+
 class QueueRole(str, Enum):
     """Role a queue is used for"""
 
     ANY = 'any'
     SERVER = 'server'
     CLIENT = 'client'
-    
+
+
 class ColmenaQueues:
     """Base class for a queue used in Colmena.
 
@@ -38,14 +40,16 @@ class ColmenaQueues:
     def __init__(self,
                  topics: Collection[str],
                  methods: Collection[str],
-                 serialization_method: Union[str, SerializationMethod] = SerializationMethod.JSON,
+                 serialization_method: Union[str,
+                                             SerializationMethod] = SerializationMethod.JSON,
                  keep_inputs: bool = True,
                  proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
-                 proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
+                 proxystore_threshold: Optional[Union[int,
+                                                      Dict[str, int]]] = None,
                  available_task_capacity: Optional[int] = 16,
-                #  estimate_methods: Optional[Dict[str, callable]] = None,
-                 enable_evo = False,
-                 available_resources = {"cpu": 64, "gpu": 4, "memory": "128G"}):
+                 #  estimate_methods: Optional[Dict[str, callable]] = None,
+                 enable_evo=False,
+                 available_resources: dict = None):
         """
         Args:
             topics: Names of topics that are known for this queue
@@ -61,7 +65,7 @@ class ColmenaQueues:
                 mapping topics to threshold to use different threshold values
                 for different topics. None values in the mapping will exclude
                 ProxyStore use with that topic.
-                
+
             available_task_capacity: the capacity of available task list, after
                 the capacity is reached, the task this flag prevent the agent submit 
                 task to the queue
@@ -75,41 +79,43 @@ class ColmenaQueues:
         self.keep_inputs = keep_inputs
         self.serialization_method = serialization_method
         self.role = QueueRole.ANY
-        
+
         # available task for evosch, YXX
         self._add_task_flag = Event()
         self._add_task_lock = Lock()
         self._add_task_flag.set()
-        ## TODO Extract historical data to estimate running time, and register estimate_methods. by YXX
+        # TODO Extract historical data to estimate running time, and register estimate_methods. by YXX
         historical_data = evo_sch.historical_data(methods=methods, queue=self)
         self._available_task_capacity = available_task_capacity
         available_task = {}
         for method in self.methods:
             available_task[method] = []
         self._available_tasks = evo_sch.available_task(available_task)
-        
+
         self.evosch_lock = threading.Lock()
-        self.evosch:evo_sch.evosch2 = evo_sch.evosch2(resources=available_resources, at=self._available_tasks, hist_data=historical_data)
-        self.best_ind = None
-        
-        ## TODO function, improvement weight
+        self.evosch: evo_sch.evosch2 = evo_sch.evosch2(
+            resources=available_resources, at=self._available_tasks, hist_data=historical_data)
+        self.best_allocation = None  # best allocation
+
+        # TODO function, improvement weight
         # trace task submit seq
-        
-        ## Result list temp for result object, can be quick search by task_id
-        self.result_list = {} # can be quick search by id
-        
-        ## timer for trigger evo_sch
+
+        # Result list temp for result object, can be quick search by task_id
+        self.result_list = {}  # can be quick search by id
+
+        # timer for trigger evo_sch
         timer = None
+
         def reset_timer():
             nonlocal timer
             # 重置计时器，取消之前的计时器并启动新的计时器
             if timer:
                 timer.cancel()
-            timeout=3
+            timeout = 3
             timer = threading.Timer(timeout, self.trigger_evo_sch)
             timer.start()
         self.timer_trigger = reset_timer
-        
+
         # Create {topic: proxystore_name} mapping
         self.proxystore_name = {t: None for t in self.topics}
         if isinstance(proxystore_name, str):
@@ -117,16 +123,19 @@ class ColmenaQueues:
         elif isinstance(proxystore_name, dict):
             self.proxystore_name.update(proxystore_name)
         elif proxystore_name is not None:
-            raise ValueError(f'Unexpected type {type(proxystore_name)} for proxystore_name')
+            raise ValueError(
+                f'Unexpected type {type(proxystore_name)} for proxystore_name')
 
         # Create {topic: proxystore_threshold} mapping
         self.proxystore_threshold = {t: None for t in self.topics}
         if isinstance(proxystore_threshold, int):
-            self.proxystore_threshold = {t: proxystore_threshold for t in self.topics}
+            self.proxystore_threshold = {
+                t: proxystore_threshold for t in self.topics}
         elif isinstance(proxystore_threshold, dict):
             self.proxystore_threshold.update(proxystore_threshold)
         elif proxystore_threshold is not None:
-            raise ValueError(f'Unexpected type {type(proxystore_threshold)} for proxystore_threshold')
+            raise ValueError(
+                f'Unexpected type {type(proxystore_threshold)} for proxystore_threshold')
 
         # Verify that ProxyStore backends exist
         for ps_name in set(self.proxystore_name.values()):
@@ -181,7 +190,8 @@ class ColmenaQueues:
             calling_function: Name of the calling function
         """
         if self.role != QueueRole.ANY and self.role != allowed_role:
-            warnings.warn(f'{calling_function} is intended for {allowed_role} not a {self.role}')
+            warnings.warn(
+                f'{calling_function} is intended for {allowed_role} not a {self.role}')
 
     @property
     def active_count(self) -> int:
@@ -196,78 +206,59 @@ class ColmenaQueues:
         role = QueueRole(role)
         self.role = role
 
-
     def get_result(self, topic: str = 'default', timeout: Optional[float] = None) -> Optional[Result]:
-        """Get a completed result
-        add evo_sch plugin
-
-        Args:
-            topic: Which topic of task to wait for
-            timeout: Timeout for waiting for a value
-        Returns:
-            (Result) Result from a computation
-        Raises:
-            TimeoutException if the timeout is met
-        """
         self._check_role(QueueRole.CLIENT, 'get_result')
 
-        # Get a value
         message = self._get_result(timeout=timeout, topic=topic)
         logger.debug(f'Received value: {str(message)[:25]}')
 
-        # Parse the value and mark it as complete
         result_obj = Result.parse_raw(message)
         result_obj.time_deserialize_results = result_obj.deserialize()
         result_obj.mark_result_received()
 
-        ## TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
-        ## maybe just count resources here
-        # add hist data
-        # self.add_hist(topic=topic, task_id=result_obj.task_id, task_info=result_obj.task_info) # cant work now, we use hist save data 
-        
-        # Some logging
-        # logger.info(f'Client received a {result_obj.method} result with topic {topic}')
-
-        # Update the list of active tasks
         with self._active_lock:
             self._active_tasks.discard(result_obj.task_id)
             if len(self._active_tasks) == 0:
                 self._all_complete.set()
-        
-        logger.info(f'Client received a {result_obj.method} result with topic {topic}, consume resource is {result_obj.inputs[1]}')
-        
+
+        logger.info(
+            f'Client received a {result_obj.method} result with topic {topic}, consume resource is {result_obj.inputs[1]}')
+
         if self.enable_evo:
-            # resume resources, key should in inmutable list
-            for key, value in result_obj.inputs[1].items():
-                if key in ['cpu', 'gpu']:
-                    self.evosch.resources[key]+=value
-            for task in self.evosch.running_task:
-                if task['task_id'] == result_obj.task_id:
-                    self.evosch.running_task.remove(task)
-                    break
-                
-            # add history in evo_sch
-            if result_obj.success:
-                self.evosch.hist_data.complete_task_seq.append({"method":result_obj.method, "topic":topic, "task_id":result_obj.task_id, "time":time.time(), "type":"complete"})
-                self.evosch.hist_data.get_features_from_result_object(result_obj)
-            else:
-                for item in self.evosch.hist_data.submit_task_seq:
-                    if item['task_id'] == result_obj.task_id:
-                        self.evosch.hist_data.submit_task_seq.remove(item)
+            with self.evosch_lock:
+                node = getattr(result_obj.resources, 'node')
+                gpu_value = result_obj.inputs[1]['gpu']
+                self.evosch.resources[node]['cpu'] += result_obj.inputs[1]['cpu']
+                self.evosch.resources[node]['gpu'] += len(gpu_value)
+                self.evosch.resources[node]['gpu_devices'] + gpu_value
+                self.evosch.resources[node]['gpu_devices'].sort()
+                setattr(result_obj.resources, 'gpu', len(gpu_value))
+                for task in self.evosch.running_task_node[node]:
+                    if task['task_id'] == result_obj.task_id:
+                        self.evosch.running_task_node[node].remove(task)
                         break
-            
-            logger.info(f'Client received a {result_obj.method} result with topic {topic}, restore resources:remain resource is {self.evosch.resources}')
-            
-            if self.best_ind.task_allocation:        
-                # resume some resource and continue submit task
-                with self.evosch_lock:
-                    self.trigger_submit_task(self.best_ind)
-            else:
-                # now we have room for thinker put task in queue
-                self._add_task_flag.set()
-                if self.evosch.at.get_total_nums() > 0:
-                    self.timer_trigger()
-            
+
+                if result_obj.success:
+                    self.evosch.hist_data.complete_task_seq.append(
+                        {"method": result_obj.method, "topic": topic, "task_id": result_obj.task_id, "time": time.time(), "type": "complete"})
+                    self.evosch.hist_data.get_features_from_result_object(
+                        result_obj)
+                else:
+                    for item in self.evosch.hist_data.submit_task_seq:
+                        if item['task_id'] == result_obj.task_id:
+                            self.evosch.hist_data.submit_task_seq.remove(item)
+                            break
+
+                logger.info(
+                    f'Client received a {result_obj.method} result with topic {topic}, restore resources: remaining resources on node {node} are {self.evosch.resources[node]}')
+
+                if self.best_allocation:
+                    self.trigger_submit_task(self.best_allocation)
+                else:
+                    self._add_task_flag.set()
+                    if self.evosch.at.get_total_nums() > 0:
+                        self.timer_trigger()
+
         return result_obj
 
     def send_inputs(self,
@@ -292,8 +283,8 @@ class ColmenaQueues:
             Task ID
         """
         self._check_role(QueueRole.CLIENT, 'send_inputs')
-        
-        ## TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
+
+        # TODO YXX modified here, add scheduler, trigger by send_inputs and get_result
         # if the task capacity is full, wait for the evo_sch to trigger, and finish some task
         self._add_task_flag.wait()
         # Make sure the queue topic exists
@@ -331,16 +322,19 @@ class ColmenaQueues:
             keep_inputs=_keep_inputs,
             serialization_method=self.serialization_method,
             task_info=task_info,
-            resources=resources or ResourceRequirements(),  # Takes either the user specified or a default
+            # Takes either the user specified or a default
+            resources=resources or ResourceRequirements(),
             **ps_kwargs
         )
         result.time_serialize_inputs, proxies = result.serialize()
-        
+
         if self.enable_evo:
-            ## add to available task list YXX, under this lock agent cant submit task
+            # add to available task list YXX, under this lock agent cant submit task
             with self._add_task_lock:
-                self._available_tasks.add_task_id(task_name=method, task_id=result.task_id)
-                self.evosch.hist_data.submit_task_seq.append({"method":method, "topic":topic, "task_id":result.task_id, "time":time.time(), "type":"submit"})
+                self._available_tasks.add_task_id(
+                    task_name=method, task_id=result.task_id)
+                self.evosch.hist_data.submit_task_seq.append(
+                    {"method": method, "topic": topic, "task_id": result.task_id, "time": time.time(), "type": "submit"})
                 logger.info(f'Client sent a {method} task with topic {topic}.')
                 self.result_list[result.task_id] = result
                 # detect the capacity
@@ -349,69 +343,72 @@ class ColmenaQueues:
                 #     self._add_task_flag.clear() # TODO for now we disable it to run the test
             self.timer_trigger()
         else:
-            #Push the serialized value to the task server
-            #move this after the task is added to the available task list and decide by scheduler
+            # Push the serialized value to the task server
+            # move this after the task is added to the available task list and decide by scheduler
             self._send_request(result.json(exclude_none=True), topic)
-            logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
+            logger.info(
+                f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
 
         # Store the task ID in the active list
         with self._active_lock:
             self._active_tasks.add(result.task_id)
             self._all_complete.clear()
         return result.task_id
-    
-    def trigger_submit_task(self,best_ind: evo_sch.individual):
-        logger.info(f'Client trigger submit task, available task length is {len(best_ind.task_allocation)}')
-        not_enough_resource = False
-        #TODO need modify for multipul resources
-        while len(best_ind.task_allocation) > 0:
-            task = best_ind.task_allocation[0]
-            # if not_enough_resource:
-            #     break
-            # for key, value in task['resources'].items():
+
+    def trigger_submit_task(self, best_allocation: list):
+        logger.info(
+            f'Client trigger submit task, available task length is {len(best_allocation)}')
+        while len(best_allocation) > 0:
+            task = best_allocation[0]
             key = 'cpu'
-            value = task['resources']['cpu']
-            if self.evosch.resources[key] < value:
-                logger.info(f'Client trigger submit task, resource is not enough, submit again after some task completed')
-                # not_enough_resource = True
-                break # wait for resource
+            cpu_value = task['resources']['cpu']
+            gpu_value = task['resources']['gpu']
+            node = task['resources']['node']
+
+            if self.evosch.resources[node]['cpu'] < cpu_value or self.evosch.resources[node]['gpu'] < gpu_value:
+                logger.info(
+                    f'Client trigger submit task, resource is not enough, submit again after some task completed')
+                break  # wait for resource
             else:
-                # logger.info(f'submit task to queue, remain resource is {self.evosch.resources}, consume resource is {task["resources"]}')
-                logger.info(f"submit task {task['task_id']}to queue, remain resource is {self.evosch.resources}, consume resource is {key,value}")
-                self.evosch.resources[key] -= value
-                best_ind.task_allocation.pop(0)
-                # predict_task = best_ind.predict_run_seq.pop(0)
-                # while predict_task['task_id'] != task['task_id']:
-                #     predict_task = best_ind.predict_run_seq.pop(0)
-                self.evosch.at.remove_task_id(task_name=task['name'], task_id=task['task_id'])
-                # refresh the predict task information
-                # predict_task['start_time'] = time.time()
-                
+                logger.info(
+                    f"submit task {task['task_id']} to queue on node {node}, remaining resources are {self.evosch.resources[node]}, consume resources are {task['resources']}")
+                self.evosch.resources[node]['cpu'] -= cpu_value
+                self.evosch.resources[node]['gpu'] -= gpu_value
+                best_allocation.pop(0)
+
+                self.evosch.at.remove_task_id(
+                    task_name=task['name'], task_id=task['task_id'])
+
                 predict_task = {
-                'name': task['name'],
-                'task_id': task['task_id'],
-                'start_time': time.time(),
-                'finish_time': None,  
-                'total_runtime': task['total_runtime'],  
-                'resources': task['resources']
+                    'name': task['name'],
+                    'task_id': task['task_id'],
+                    'start_time': time.time(),
+                    'finish_time': None,
+                    'total_runtime': task['total_runtime'],
+                    'resources': task['resources'],
+                    'node': node
                 }
-                predict_task['finish_time'] = predict_task['start_time'] + predict_task['total_runtime']
-                self.evosch.running_task.append(predict_task)
-                # pop the task from available task list
+                predict_task['finish_time'] = predict_task['start_time'] + \
+                    predict_task['total_runtime']
+                self.evosch.running_task_node[node].append(predict_task)
+
                 result = self.result_list.pop(task['task_id'])
-                result.inputs[1]['cpu'] = value 
-                setattr(result.resources,'cpu',value)
-                logger.info(f'Resources: result.resources is: {result.resources}')
-                method = result.method
+                result.inputs[1]['cpu'] = cpu_value
+                gpu_value, self.evosch.resources[node]['gpu_devices'] = self.evosch.resources[node][
+                    'gpu_devices'][:gpu_value], self.evosch.resources[node]['gpu_devices'][gpu_value:]
+                result.inputs[1]['gpu'] = gpu_value
+                setattr(result.resources, 'cpu', cpu_value)
+                setattr(result.resources, 'gpu', gpu_value)
+                setattr(result.resources, 'node', node)
+                logger.info(
+                    f'Resources: result.resources is: {result.resources}')
                 topic = result.topic
                 self._send_request(result.json(exclude_none=True), topic)
-                # logger.info(f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
-                
-        # task not allocate, trigger evo_sch
-        # in case that only one task is submitted for collect data for predict model 
-        if self.evosch.at.get_total_nums() > 0 :
+
+        # remain task are waiting for resources, every n seconds trigger submit
+        if self.evosch.at.get_total_nums() > 0:
             self.timer_trigger()
-    
+
     def trigger_evo_sch(self):
         """Conditions that trigger scheduling and submission of tasks
 
@@ -424,41 +421,53 @@ class ColmenaQueues:
             logger.info("evosch_lock acquire")
             # run_flag = False
             try:
-                if self._available_tasks.get_total_nums() ==0:
+                if self._available_tasks.get_total_nums() == 0:
+                    logger.info("no available task in the available task list")
                     return
-                ## add condition here to trigger evo_sch
-                # condition 1: the task is submitted to the queue, and after task submit timeout
-                # condition 2: the task capacity is full
-                # how to get the perferct timeming to trigger evo_sch and submit task
-                # while thinker stop submit task, add event and lock at task submitter
-                # while the best_ind is better than before(while each task submit and detect the best_ind)
-                # wait for a certain time, then trigger evo_sch
+                # no pending task on any node
+                # check any node have no pending task, go into runga
+                elif not self.evosch.check_pending_task_on_node(self.best_allocation):
+                    logger.info(
+                        f'Client trigger evo_sch because no pending task on any node, available task is {self._available_tasks.task_ids}')
+                    return
+                # TODO think correct logic
+                # add condition here to trigger evo_sch
+                # condition 1: send_inputs, then timetrigger timeout
+                # condition 2: the task capacity is full? need re consider
+                #
+                # while workflow running, new task come and re sort the queue
+                # a task completed, reset timetrigger
+                #
+
+                # check any node have no pending task, go into runga
                 if self._add_task_flag.is_set() is False:
                     # get ind and submit task on the sch order and resources
                     # drop submitted task and record resources
-                    logger.info(f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}')
-                    logger.info(f'result list length is {len(self.result_list)}')
-                    if self.evosch.resources['cpu']>=16:
-                        self.evosch.population = self.evosch.generate_population(100)
-                        self.best_ind = self.evosch.run_ga(100) # parameter may need modify
-                        self.trigger_submit_task(self.best_ind)
-                    else:
-                        logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
+                    logger.info(
+                        f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}')
+                    logger.info(
+                        f'result list length is {len(self.result_list)}')
+                    # if self.evosch.resources['cpu']>=16:
+                    #     pass
+                    # else:
+                    #     logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
+                    self.best_allocation = self.evosch.run_ga(
+                        5)  # parameter may need modify
+                    self.trigger_submit_task(self.best_allocation)
+
                 if self._add_task_flag.is_set() is True:
-                    logger.info(f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
-                    logger.info(f'result list length is {len(self.result_list)}')
-                    if self.evosch.resources['cpu']>=16:
-                        self.evosch.population = self.evosch.generate_population(100)
-                        self.best_ind = self.evosch.run_ga(100) # parameter may need modify
-                        self.trigger_submit_task(self.best_ind)
-                    else:
-                        logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
+                    logger.info(
+                        f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
+                    logger.info(
+                        f'result list length is {len(self.result_list)}')
+                    self.best_allocation = self.evosch.run_ga(
+                        100)  # parameter may need modify
+                    self.trigger_submit_task(self.best_allocation)
             finally:
                 self.evosch_lock.release()
                 logger.info("evosch_lock release")
         else:
             logger.info("evosch_lock acquire fail, evosch is running")
-            # skip trigger, now evosch is running
             return
 
     def wait_until_done(self, timeout: Optional[float] = None):
@@ -486,7 +495,8 @@ class ColmenaQueues:
 
         # Pull a record off of the queue
         topic, message = self._get_request(timeout)
-        logger.debug(f'Received a task message with topic {topic} inbound queue')
+        logger.debug(
+            f'Received a task message with topic {topic} inbound queue')
 
         # Get the message
         task = Result.parse_raw(message)

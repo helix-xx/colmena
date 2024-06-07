@@ -404,6 +404,13 @@ class ParslTaskServer(FutureBasedTaskServer):
         serialized_inputs = task.inputs  # Hold a copy of the original inputs. Used for "exec" apps to minimize
         future: Future = function(task)
         logger.debug('Pushed task to Parsl')
+        executors = task.resources.node
+        if isinstance(executors, str):
+            executors = [executors]
+        elif isinstance(executors, list):
+            executors = executors
+        function.executors = executors
+        logger.debug('Modified executors: %s', task.resources.node)
         # TODO (wardlt): Implement "resubmit if task returns a new future." or the ability to launch Parsl workflows with >1 step
 
         # Depending on the task type, return a different future

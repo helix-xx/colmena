@@ -171,7 +171,8 @@ class ResourceRequirements(BaseModel):
     # disk: Optional[int] = None
 
     cpu: int = Field(1, description='Number of CPUs to use for the task')
-    gpu: int = Field(0, description='Number of GPUs to use for the task')
+    gpu: Union[int, List[int]] = Field(0, description='Number of GPUs to use for the task')
+    node: str = Field("all", description='which ndoe to be run')
     
     
     # Optional

@@ -49,7 +49,7 @@ class RedisQueues(ColmenaQueues):
                  proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
                  available_task_capacity: Optional[int] = 100, # add for evoscheduler
                  enable_evo = False,
-                 available_resources = {"cpu": 64, "gpu": 4, "memory": "128G"}):
+                 available_resources:dict = None):
         """
         Args:
             hostname (str): Hostname of the Redis server
