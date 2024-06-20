@@ -11,7 +11,7 @@ from threading import Lock, Event
 from typing import Callable, Optional, Tuple, Any, Collection, Union, Dict, Set
 import logging
 from attr import dataclass
-from numpy import tri
+from collections import defaultdict
 import time
 
 import proxystore.store
@@ -96,6 +96,9 @@ class ColmenaQueues:
         self.evosch: evo_sch.evosch2 = evo_sch.evosch2(
             resources=available_resources, at=self._available_tasks, hist_data=historical_data)
         self.best_allocation = None  # best allocation
+        
+        # TODO tmp test, acquire task while resources idle
+        self.prepared_task = defaultdict(list)
 
         # TODO function, improvement weight
         # trace task submit seq
@@ -230,9 +233,9 @@ class ColmenaQueues:
                 gpu_value = result_obj.inputs[1]['gpu']
                 self.evosch.resources[node]['cpu'] += result_obj.inputs[1]['cpu']
                 self.evosch.resources[node]['gpu'] += len(gpu_value)
-                self.evosch.resources[node]['gpu_devices'] + gpu_value
+                self.evosch.resources[node]['gpu_devices'].extend(gpu_value)
                 self.evosch.resources[node]['gpu_devices'].sort()
-                setattr(result_obj.resources, 'gpu', len(gpu_value))
+                # setattr(result_obj.resources, 'gpu', len(gpu_value))
                 for task in self.evosch.running_task_node[node]:
                     if task['task_id'] == result_obj.task_id:
                         self.evosch.running_task_node[node].remove(task)
@@ -327,8 +330,26 @@ class ColmenaQueues:
             **ps_kwargs
         )
         result.time_serialize_inputs, proxies = result.serialize()
-
+        
+        
         if self.enable_evo:
+            # TODO tmp test for acquire task while resources idle
+            # check if we tmp save the task in dict
+            if self.evosch.prepared_task[method] is None or len(self.prepared_task[method]) < 4:
+                result_p = Result(
+                    (input_args, input_kwargs),
+                    method=method,
+                    topic=topic,
+                    keep_inputs=_keep_inputs,
+                    serialization_method=self.serialization_method,
+                    task_info=task_info,
+                    # Takes either the user specified or a default
+                    resources=resources or ResourceRequirements(),
+                    **ps_kwargs
+                )
+                result.time_serialize_inputs, proxies = result.serialize()
+                self.evosch.prepared_task[method].append(result_p)
+            
             # add to available task list YXX, under this lock agent cant submit task
             with self._add_task_lock:
                 self._available_tasks.add_task_id(
@@ -358,52 +379,82 @@ class ColmenaQueues:
     def trigger_submit_task(self, best_allocation: list):
         logger.info(
             f'Client trigger submit task, available task length is {len(best_allocation)}')
-        while len(best_allocation) > 0:
-            task = best_allocation[0]
-            key = 'cpu'
-            cpu_value = task['resources']['cpu']
-            gpu_value = task['resources']['gpu']
+
+        # 创建一个字典来保存每个节点的任务队列
+        node_task_queues = {}
+        for task in best_allocation:
             node = task['resources']['node']
+            if node not in node_task_queues:
+                node_task_queues[node] = []
+            node_task_queues[node].append(task)
 
-            if self.evosch.resources[node]['cpu'] < cpu_value or self.evosch.resources[node]['gpu'] < gpu_value:
-                logger.info(
-                    f'Client trigger submit task, resource is not enough, submit again after some task completed')
-                break  # wait for resource
-            else:
-                logger.info(
-                    f"submit task {task['task_id']} to queue on node {node}, remaining resources are {self.evosch.resources[node]}, consume resources are {task['resources']}")
-                self.evosch.resources[node]['cpu'] -= cpu_value
-                self.evosch.resources[node]['gpu'] -= gpu_value
-                best_allocation.pop(0)
+        # 创建一个字典来记录每个节点是否被阻塞
+        node_blocked = {node: False for node in node_task_queues.keys()}
 
-                self.evosch.at.remove_task_id(
-                    task_name=task['name'], task_id=task['task_id'])
+        while True:
+            all_nodes_blocked = True
+            for node, tasks in node_task_queues.items():
+                if node_blocked[node]:
+                    continue  # 如果节点被阻塞，跳过这个节点
 
-                predict_task = {
-                    'name': task['name'],
-                    'task_id': task['task_id'],
-                    'start_time': time.time(),
-                    'finish_time': None,
-                    'total_runtime': task['total_runtime'],
-                    'resources': task['resources'],
-                    'node': node
-                }
-                predict_task['finish_time'] = predict_task['start_time'] + \
-                    predict_task['total_runtime']
-                self.evosch.running_task_node[node].append(predict_task)
+                if not tasks:
+                    continue  # 如果没有任务，跳过这个节点
 
-                result = self.result_list.pop(task['task_id'])
-                result.inputs[1]['cpu'] = cpu_value
-                gpu_value, self.evosch.resources[node]['gpu_devices'] = self.evosch.resources[node][
-                    'gpu_devices'][:gpu_value], self.evosch.resources[node]['gpu_devices'][gpu_value:]
-                result.inputs[1]['gpu'] = gpu_value
-                setattr(result.resources, 'cpu', cpu_value)
-                setattr(result.resources, 'gpu', gpu_value)
-                setattr(result.resources, 'node', node)
-                logger.info(
-                    f'Resources: result.resources is: {result.resources}')
-                topic = result.topic
-                self._send_request(result.json(exclude_none=True), topic)
+                task = tasks[0]
+                cpu_value = task['resources']['cpu']
+                gpu_value = task['resources']['gpu']
+
+                if self.evosch.resources[node]['cpu'] < cpu_value or self.evosch.resources[node]['gpu'] < gpu_value:
+                    logger.info(
+                        f'Client trigger submit task, resource is not enough on node {node} for task {task["task_id"]}, marking this node as blocked')
+                    node_blocked[node] = True  # 标记这个节点为阻塞状态
+                else:
+                    logger.info(
+                        f"submit task {task['task_id']} to queue on node {node}, remaining resources are {self.evosch.resources[node]}, consume resources are {task['resources']}")
+                    self.evosch.resources[node]['cpu'] -= cpu_value
+                    self.evosch.resources[node]['gpu'] -= gpu_value
+
+                    # 从原始 best_allocation 列表中移除该任务
+                    best_allocation.remove(task)
+                    tasks.pop(0)  # 从当前节点的任务队列中移除该任务
+
+                    self.evosch.at.remove_task_id(
+                        task_name=task['name'], task_id=task['task_id'])
+
+                    predict_task = {
+                        'name': task['name'],
+                        'task_id': task['task_id'],
+                        'start_time': time.time(),
+                        'finish_time': None,
+                        'total_runtime': task['total_runtime'],
+                        'resources': task['resources'],
+                        'node': node
+                    }
+                    predict_task['finish_time'] = predict_task['start_time'] + \
+                        predict_task['total_runtime']
+                    self.evosch.running_task_node[node].append(predict_task)
+
+                    result = self.result_list.pop(task['task_id'])
+                    result.inputs[1]['cpu'] = cpu_value
+                    gpu_value, self.evosch.resources[node]['gpu_devices'] = self.evosch.resources[node][
+                        'gpu_devices'][:gpu_value], self.evosch.resources[node]['gpu_devices'][gpu_value:]
+                    result.inputs[1]['gpu'] = gpu_value
+                    setattr(result.resources, 'cpu', cpu_value)
+                    setattr(result.resources, 'gpu', gpu_value)
+                    setattr(result.resources, 'node', node)
+                    topic = result.topic
+                    self._send_request(result.json(exclude_none=True), topic)
+                    logger.info(
+                        f'Resources: result.resources is: {result.resources}')
+
+                    # 重置节点的阻塞状态
+                    node_blocked[node] = False
+
+            # 检查是否所有节点都被阻塞
+            all_nodes_blocked = all(node_blocked[node] or not tasks for node, tasks in node_task_queues.items())
+            if all_nodes_blocked:
+                logger.info('All nodes are blocked or have no tasks to submit, stopping submission.')
+                break
 
         # remain task are waiting for resources, every n seconds trigger submit
         if self.evosch.at.get_total_nums() > 0:
@@ -426,9 +477,12 @@ class ColmenaQueues:
                     return
                 # no pending task on any node
                 # check any node have no pending task, go into runga
-                elif not self.evosch.check_pending_task_on_node(self.best_allocation):
+                elif self.evosch.check_pending_task_on_node(self.best_allocation):
                     logger.info(
-                        f'Client trigger evo_sch because no pending task on any node, available task is {self._available_tasks.task_ids}')
+                        f'Client trigger evo_sch because no task pending on one or more node, available task is {self._available_tasks.task_ids}, pending task is {self.best_allocation}')
+                else:
+                    logger.info(
+                        f'Client trigger evo_sch because task pending on all nodes, available task is {self._available_tasks.task_ids}, pending task is {self.best_allocation}')
                     return
                 # TODO think correct logic
                 # add condition here to trigger evo_sch
