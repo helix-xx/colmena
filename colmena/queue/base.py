@@ -347,7 +347,7 @@ class ColmenaQueues:
                     resources=resources or ResourceRequirements(),
                     **ps_kwargs
                 )
-                result.time_serialize_inputs, proxies = result.serialize()
+                result_p.time_serialize_inputs, proxies = result_p.serialize()
                 self.evosch.prepared_task[method].append(result_p)
             
             # add to available task list YXX, under this lock agent cant submit task
@@ -554,6 +554,7 @@ class ColmenaQueues:
 
         # Get the message
         task = Result.parse_raw(message)
+        # task = Result.model_validate_json(message)
         task.mark_input_received()
         return topic, task
 

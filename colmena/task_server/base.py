@@ -173,6 +173,25 @@ def run_and_record_timing(func: Callable, result: Result) -> Result:
     Returns:
         Result object with the serialized result
     """
+    # set logger in each task run
+    # Configure logger once
+    import sys,os
+    logger = logging.getLogger('task')
+    logger.setLevel(logging.DEBUG)  # 设置日志级别
+
+    # Define handlers
+    file_handler = logging.FileHandler(os.path.join(result.log_dir, 'task_logs.log'))  # 使用os.path.join确保路径正确
+    stdout_handler = logging.StreamHandler(sys.stdout)
+
+    # Set formatter for handlers
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    stdout_handler.setFormatter(formatter)
+
+    # Add handlers to logger
+    logger.addHandler(file_handler)
+    logger.addHandler(stdout_handler)
+    
     # Mark that compute has started on the worker
     result.mark_compute_started()
 
@@ -191,6 +210,11 @@ def run_and_record_timing(func: Callable, result: Result) -> Result:
     # Execute the function
     start_time = perf_counter()
     success = True
+    # limit args str length
+    # logger.info(f'Running {func.__name__} with args {result.args} and kwargs {result.kwargs}')
+    log_args = str(result.args)[:100] + '...' if len(str(result.args)) > 100 else str(result.args)
+    log_kargs = str(result.kwargs)[:100] + '...' if len(str(result.kwargs)) > 100 else str(result.kwargs)
+    logger.info(f'Running {func.__name__} with args {log_args} and kwargs {log_kargs}')
     try:
         if '_resources' in result.kwargs:
             logger.warning('`_resources` provided as a kwargs. Unexpected things are about to happen')

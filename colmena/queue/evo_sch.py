@@ -270,6 +270,8 @@ class historical_data(SingletonClass):
                     break
                 else:
                     value = getattr(value, key)
+            if feature == 'resources.gpu':
+                value = len(value) if isinstance(value, list) else 0  # 如果是list，则取长度，否则默认为0
                 # if value is None:
                 #     break
             feature_values[feature] = value

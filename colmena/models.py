@@ -3,6 +3,7 @@ import logging
 import pickle as pkl
 import shlex
 import sys
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -243,6 +244,9 @@ class Result(BaseModel):
     proxystore_config: Optional[Dict] = Field(None, description="ProxyStore backend configuration")
     proxystore_threshold: Optional[int] = Field(None,
                                                 description="Proxy all input/output objects larger than this threshold in bytes")
+    
+    # YXX add
+    log_dir: Optional[str] = Field(None, description="log directory")
 
     def __init__(self, inputs: Tuple[Tuple[Any], Dict[str, Any]], **kwargs):
         """
@@ -254,6 +258,10 @@ class Result(BaseModel):
         # Mark "created" only if the value is not already set
         if 'time_created' not in kwargs:
             self.time_created = datetime.now().timestamp()
+        
+        # get log_dir from kwargs
+        default_dir = os.path.expanduser(path='~/tmp/task_logs')
+        self.log_dir = str(self.task_info.get('log_dir', default_dir))
 
     @property
     def args(self) -> Tuple[Any]:
