@@ -184,7 +184,7 @@ def run_and_record_timing(func: Callable, result: Result) -> Result:
     stdout_handler = logging.StreamHandler(sys.stdout)
 
     # Set formatter for handlers
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(filename)s:%(lineno)d - %(levelname)s - %(message)s')
     file_handler.setFormatter(formatter)
     stdout_handler.setFormatter(formatter)
 

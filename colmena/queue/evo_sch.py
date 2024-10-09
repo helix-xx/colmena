@@ -392,7 +392,7 @@ class evosch2:
         for key,value in self.resources.items():
             value['gpu_devices']=list(range(value['gpu'])) #TODO gpu nums change to gpu_devices ids; next we need get ids from config
         self.resources_evo:dict = copy.deepcopy(self.resources) # used in evosch
-        logger.info("total resources: {self.resources_evo}")
+        logger.info("total resources: {}".format(self.resources_evo))
         self.hist_data = hist_data
         self.at = at # available task
         self.population = [] # [individual,,,] # store all individual on single node
@@ -1136,7 +1136,7 @@ class evosch2:
         # run no record task
         ind = self.detect_no_his_task()
         if len(ind.task_allocation) > 0:
-            return ind
+            return ind.task_allocation
         
         self.population = self.generate_population_node(1)
         
@@ -1169,8 +1169,8 @@ class evosch2:
             
             # evo on each node
             for a_ind in self.population:
-                self.load_balance(a_ind, acq_task=False)
-                self.population_node = self.generate_population_in_node(a_ind,20) # regenerate
+                self.load_balance(a_ind, acq_task=False) # for each individual on all node, do balance
+                self.population_node = self.generate_population_in_node(a_ind,20) # generate ind on each node
                 # logger.info(f"Generation_node, gen: {gen}: a_ind:{a_ind}")
                 for node in self.node_resources.keys():
                     logger.info(f"Node {node} evolution")
