@@ -1,4 +1,5 @@
 """Base classes for queues and related functions"""
+
 from functools import total_ordering
 import queue
 import re
@@ -37,19 +38,21 @@ class ColmenaQueues:
     with the addition of a "topic" used by Colmena to separate
     task requests or objects used for different purposes."""
 
-    def __init__(self,
-                 topics: Collection[str],
-                 methods: Collection[str],
-                 serialization_method: Union[str,
-                                             SerializationMethod] = SerializationMethod.JSON,
-                 keep_inputs: bool = True,
-                 proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
-                 proxystore_threshold: Optional[Union[int,
-                                                      Dict[str, int]]] = None,
-                 available_task_capacity: Optional[int] = 16,
-                 #  estimate_methods: Optional[Dict[str, callable]] = None,
-                 enable_evo=False,
-                 available_resources: dict = None):
+    def __init__(
+        self,
+        topics: Collection[str],
+        methods: Collection[str],
+        serialization_method: Union[
+            str, SerializationMethod
+        ] = SerializationMethod.JSON,
+        keep_inputs: bool = True,
+        proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
+        proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
+        available_task_capacity: Optional[int] = 16,
+        #  estimate_methods: Optional[Dict[str, callable]] = None,
+        enable_evo=False,
+        available_resources: dict = None,
+    ):
         """
         Args:
             topics: Names of topics that are known for this queue
@@ -67,7 +70,7 @@ class ColmenaQueues:
                 ProxyStore use with that topic.
 
             available_task_capacity: the capacity of available task list, after
-                the capacity is reached, the task this flag prevent the agent submit 
+                the capacity is reached, the task this flag prevent the agent submit
                 task to the queue
         """
 
@@ -94,9 +97,12 @@ class ColmenaQueues:
 
         self.evosch_lock = threading.Lock()
         self.evosch: evo_sch.evosch2 = evo_sch.evosch2(
-            resources=available_resources, at=self._available_tasks, hist_data=historical_data)
+            resources=available_resources,
+            at=self._available_tasks,
+            hist_data=historical_data,
+        )
         self.best_allocation = None  # best allocation
-        
+
         # TODO tmp test, acquire task while resources idle
         self.prepared_task = defaultdict(list)
 
@@ -117,6 +123,7 @@ class ColmenaQueues:
             timeout = 3
             timer = threading.Timer(timeout, self.trigger_evo_sch)
             timer.start()
+
         self.timer_trigger = reset_timer
 
         # Create {topic: proxystore_name} mapping
@@ -127,18 +134,19 @@ class ColmenaQueues:
             self.proxystore_name.update(proxystore_name)
         elif proxystore_name is not None:
             raise ValueError(
-                f'Unexpected type {type(proxystore_name)} for proxystore_name')
+                f'Unexpected type {type(proxystore_name)} for proxystore_name'
+            )
 
         # Create {topic: proxystore_threshold} mapping
         self.proxystore_threshold = {t: None for t in self.topics}
         if isinstance(proxystore_threshold, int):
-            self.proxystore_threshold = {
-                t: proxystore_threshold for t in self.topics}
+            self.proxystore_threshold = {t: proxystore_threshold for t in self.topics}
         elif isinstance(proxystore_threshold, dict):
             self.proxystore_threshold.update(proxystore_threshold)
         elif proxystore_threshold is not None:
             raise ValueError(
-                f'Unexpected type {type(proxystore_threshold)} for proxystore_threshold')
+                f'Unexpected type {type(proxystore_threshold)} for proxystore_threshold'
+            )
 
         # Verify that ProxyStore backends exist
         for ps_name in set(self.proxystore_name.values()):
@@ -194,7 +202,8 @@ class ColmenaQueues:
         """
         if self.role != QueueRole.ANY and self.role != allowed_role:
             warnings.warn(
-                f'{calling_function} is intended for {allowed_role} not a {self.role}')
+                f'{calling_function} is intended for {allowed_role} not a {self.role}'
+            )
 
     @property
     def active_count(self) -> int:
@@ -205,11 +214,14 @@ class ColmenaQueues:
         """Define the role of this queue.
 
         Controls whether users will be warned away from performing actions that are disallowed by
-        a certain queue role, such as sending results from a client or issuing requests from a server"""
+        a certain queue role, such as sending results from a client or issuing requests from a server
+        """
         role = QueueRole(role)
         self.role = role
 
-    def get_result(self, topic: str = 'default', timeout: Optional[float] = None) -> Optional[Result]:
+    def get_result(
+        self, topic: str = 'default', timeout: Optional[float] = None
+    ) -> Optional[Result]:
         self._check_role(QueueRole.CLIENT, 'get_result')
 
         message = self._get_result(timeout=timeout, topic=topic)
@@ -225,7 +237,8 @@ class ColmenaQueues:
                 self._all_complete.set()
 
         logger.info(
-            f'Client received a {result_obj.method} result with topic {topic}, consume resource is {result_obj.inputs[1]}')
+            f'Client received a {result_obj.method} result with topic {topic}, consume resource is {result_obj.inputs[1]}'
+        )
 
         if self.enable_evo:
             with self.evosch_lock:
@@ -243,9 +256,15 @@ class ColmenaQueues:
 
                 if result_obj.success:
                     self.evosch.hist_data.complete_task_seq.append(
-                        {"method": result_obj.method, "topic": topic, "task_id": result_obj.task_id, "time": time.time(), "type": "complete"})
-                    self.evosch.hist_data.get_features_from_result_object(
-                        result_obj)
+                        {
+                            "method": result_obj.method,
+                            "topic": topic,
+                            "task_id": result_obj.task_id,
+                            "time": time.time(),
+                            "type": "complete",
+                        }
+                    )
+                    self.evosch.hist_data.get_features_from_result_object(result_obj)
                 else:
                     for item in self.evosch.hist_data.submit_task_seq:
                         if item['task_id'] == result_obj.task_id:
@@ -253,7 +272,8 @@ class ColmenaQueues:
                             break
 
                 logger.info(
-                    f'Client received a {result_obj.method} result with topic {topic}, restore resources: remaining resources on node {node} are {self.evosch.resources[node]}')
+                    f'Client received a {result_obj.method} result with topic {topic}, restore resources: remaining resources on node {node} are {self.evosch.resources[node]}'
+                )
 
                 if self.best_allocation:
                     self.trigger_submit_task(self.best_allocation)
@@ -264,14 +284,16 @@ class ColmenaQueues:
 
         return result_obj
 
-    def send_inputs(self,
-                    *input_args: Any,
-                    method: str = None,
-                    input_kwargs: Optional[Dict[str, Any]] = None,
-                    keep_inputs: Optional[bool] = None,
-                    resources: Optional[Union[ResourceRequirements, dict]] = None,
-                    topic: str = 'default',
-                    task_info: Optional[Dict[str, Any]] = None) -> str:
+    def send_inputs(
+        self,
+        *input_args: Any,
+        method: str = None,
+        input_kwargs: Optional[Dict[str, Any]] = None,
+        keep_inputs: Optional[bool] = None,
+        resources: Optional[Union[ResourceRequirements, dict]] = None,
+        topic: str = 'default',
+        task_info: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Send a task request
 
         Args:
@@ -291,7 +313,9 @@ class ColmenaQueues:
         # if the task capacity is full, wait for the evo_sch to trigger, and finish some task
         self._add_task_flag.wait()
         # Make sure the queue topic exists
-        assert topic in self.topics, f'Unknown topic: {topic}. Known are: {", ".join(self.topics)}'
+        assert (
+            topic in self.topics
+        ), f'Unknown topic: {topic}. Known are: {", ".join(self.topics)}'
 
         # Make fake kwargs, if needed
         if input_kwargs is None:
@@ -310,11 +334,13 @@ class ColmenaQueues:
             store = proxystore.store.get_store(ps_name)
             # proxystore_kwargs contains all the information we would need to
             # reconnect to the ProxyStore backend on any worker
-            ps_kwargs.update({
-                'proxystore_name': ps_name,
-                'proxystore_threshold': ps_threshold,
-                'proxystore_config': store.config(),
-            })
+            ps_kwargs.update(
+                {
+                    'proxystore_name': ps_name,
+                    'proxystore_threshold': ps_threshold,
+                    'proxystore_config': store.config(),
+                }
+            )
 
         # Create a new Result object
         # logger.info(f'input_args is {input_args}, input_kwargs is {input_kwargs}')
@@ -327,15 +353,17 @@ class ColmenaQueues:
             task_info=task_info,
             # Takes either the user specified or a default
             resources=resources or ResourceRequirements(),
-            **ps_kwargs
+            **ps_kwargs,
         )
         result.time_serialize_inputs, proxies = result.serialize()
-        
-        
+
         if self.enable_evo:
             # TODO tmp test for acquire task while resources idle
             # check if we tmp save the task in dict
-            if self.evosch.prepared_task[method] is None or len(self.prepared_task[method]) < 4:
+            if (
+                self.evosch.prepared_task[method] is None
+                or len(self.prepared_task[method]) < 4
+            ):
                 result_p = Result(
                     (input_args, input_kwargs),
                     method=method,
@@ -345,17 +373,25 @@ class ColmenaQueues:
                     task_info=task_info,
                     # Takes either the user specified or a default
                     resources=resources or ResourceRequirements(),
-                    **ps_kwargs
+                    **ps_kwargs,
                 )
                 result_p.time_serialize_inputs, proxies = result_p.serialize()
                 self.evosch.prepared_task[method].append(result_p)
-            
-            # add to available task list YXX, under this lock agent cant submit task
+
+            # add to available task list, under this lock agent cant submit task
             with self._add_task_lock:
                 self._available_tasks.add_task_id(
-                    task_name=method, task_id=result.task_id)
+                    task_name=method, task_id=result.task_id
+                )
                 self.evosch.hist_data.submit_task_seq.append(
-                    {"method": method, "topic": topic, "task_id": result.task_id, "time": time.time(), "type": "submit"})
+                    {
+                        "method": method,
+                        "topic": topic,
+                        "task_id": result.task_id,
+                        "time": time.time(),
+                        "type": "submit",
+                    }
+                )
                 logger.info(f'Client sent a {method} task with topic {topic}.')
                 self.result_list[result.task_id] = result
                 # detect the capacity
@@ -368,7 +404,8 @@ class ColmenaQueues:
             # move this after the task is added to the available task list and decide by scheduler
             self._send_request(result.json(exclude_none=True), topic)
             logger.info(
-                f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values')
+                f'Client sent a {method} task with topic {topic}. Created {len(proxies)} proxies for input values'
+            )
 
         # Store the task ID in the active list
         with self._active_lock:
@@ -378,7 +415,8 @@ class ColmenaQueues:
 
     def trigger_submit_task(self, best_allocation: list):
         logger.info(
-            f'Client trigger submit task, available task length is {len(best_allocation)}')
+            f'Client trigger submit task, available task length is {len(best_allocation)}'
+        )
 
         # 创建一个字典来保存每个节点的任务队列
         node_task_queues = {}
@@ -404,13 +442,18 @@ class ColmenaQueues:
                 cpu_value = task['resources']['cpu']
                 gpu_value = task['resources']['gpu']
 
-                if self.evosch.resources[node]['cpu'] < cpu_value or self.evosch.resources[node]['gpu'] < gpu_value:
+                if (
+                    self.evosch.resources[node]['cpu'] < cpu_value
+                    or self.evosch.resources[node]['gpu'] < gpu_value
+                ):
                     logger.info(
-                        f'Client trigger submit task, resource is not enough on node {node} for task {task["task_id"]}, marking this node as blocked')
+                        f'Client trigger submit task, resource is not enough on node {node} for task {task["task_id"]}, marking this node as blocked'
+                    )
                     node_blocked[node] = True  # 标记这个节点为阻塞状态
                 else:
                     logger.info(
-                        f"submit task {task['task_id']} to queue on node {node}, remaining resources are {self.evosch.resources[node]}, consume resources are {task['resources']}")
+                        f"submit task {task['task_id']} to queue on node {node}, remaining resources are {self.evosch.resources[node]}, consume resources are {task['resources']}"
+                    )
                     self.evosch.resources[node]['cpu'] -= cpu_value
                     self.evosch.resources[node]['gpu'] -= gpu_value
 
@@ -419,7 +462,8 @@ class ColmenaQueues:
                     tasks.pop(0)  # 从当前节点的任务队列中移除该任务
 
                     self.evosch.at.remove_task_id(
-                        task_name=task['name'], task_id=task['task_id'])
+                        task_name=task['name'], task_id=task['task_id']
+                    )
 
                     predict_task = {
                         'name': task['name'],
@@ -428,32 +472,39 @@ class ColmenaQueues:
                         'finish_time': None,
                         'total_runtime': task['total_runtime'],
                         'resources': task['resources'],
-                        'node': node
+                        'node': node,
                     }
-                    predict_task['finish_time'] = predict_task['start_time'] + \
-                        predict_task['total_runtime']
+                    predict_task['finish_time'] = (
+                        predict_task['start_time'] + predict_task['total_runtime']
+                    )
                     self.evosch.running_task_node[node].append(predict_task)
 
                     result = self.result_list.pop(task['task_id'])
                     result.inputs[1]['cpu'] = cpu_value
-                    gpu_value, self.evosch.resources[node]['gpu_devices'] = self.evosch.resources[node][
-                        'gpu_devices'][:gpu_value], self.evosch.resources[node]['gpu_devices'][gpu_value:]
+                    gpu_value, self.evosch.resources[node]['gpu_devices'] = (
+                        self.evosch.resources[node]['gpu_devices'][:gpu_value],
+                        self.evosch.resources[node]['gpu_devices'][gpu_value:],
+                    )
                     result.inputs[1]['gpu'] = gpu_value
                     setattr(result.resources, 'cpu', cpu_value)
                     setattr(result.resources, 'gpu', gpu_value)
                     setattr(result.resources, 'node', node)
                     topic = result.topic
                     self._send_request(result.json(exclude_none=True), topic)
-                    logger.info(
-                        f'Resources: result.resources is: {result.resources}')
+                    logger.info(f'Resources: result.resources is: {result.resources}')
 
                     # 重置节点的阻塞状态
                     node_blocked[node] = False
 
             # 检查是否所有节点都被阻塞
-            all_nodes_blocked = all(node_blocked[node] or not tasks for node, tasks in node_task_queues.items())
+            all_nodes_blocked = all(
+                node_blocked[node] or not tasks
+                for node, tasks in node_task_queues.items()
+            )
             if all_nodes_blocked:
-                logger.info('All nodes are blocked or have no tasks to submit, stopping submission.')
+                logger.info(
+                    'All nodes are blocked or have no tasks to submit, stopping submission.'
+                )
                 break
 
         # remain task are waiting for resources, every n seconds trigger submit
@@ -479,10 +530,12 @@ class ColmenaQueues:
                 # check any node have no pending task, go into runga
                 elif self.evosch.check_pending_task_on_node(self.best_allocation):
                     logger.info(
-                        f'Client trigger evo_sch because no task pending on one or more node, available task is {self._available_tasks.task_ids}, pending task is {self.best_allocation}')
+                        f'Client trigger evo_sch because no task pending on one or more node, available task is {self._available_tasks.task_ids}, pending task is {self.best_allocation}'
+                    )
                 else:
                     logger.info(
-                        f'Client trigger evo_sch because task pending on all nodes, available task is {self._available_tasks.task_ids}, pending task is {self.best_allocation}')
+                        f'Client trigger evo_sch because task pending on all nodes, available task is {self._available_tasks.task_ids}, pending task is {self.best_allocation}'
+                    )
                     return
                 # TODO think correct logic
                 # add condition here to trigger evo_sch
@@ -498,24 +551,26 @@ class ColmenaQueues:
                     # get ind and submit task on the sch order and resources
                     # drop submitted task and record resources
                     logger.info(
-                        f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}')
-                    logger.info(
-                        f'result list length is {len(self.result_list)}')
+                        f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}'
+                    )
+                    logger.info(f'result list length is {len(self.result_list)}')
                     # if self.evosch.resources['cpu']>=16:
                     #     pass
                     # else:
                     #     logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
                     self.best_allocation = self.evosch.run_ga(
-                        5)  # parameter may need modify
+                        5
+                    )  # parameter may need modify
                     self.trigger_submit_task(self.best_allocation)
 
                 if self._add_task_flag.is_set() is True:
                     logger.info(
-                        f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done')
-                    logger.info(
-                        f'result list length is {len(self.result_list)}')
+                        f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done'
+                    )
+                    logger.info(f'result list length is {len(self.result_list)}')
                     self.best_allocation = self.evosch.run_ga(
-                        100)  # parameter may need modify
+                        100
+                    )  # parameter may need modify
                     self.trigger_submit_task(self.best_allocation)
             finally:
                 self.evosch_lock.release()
@@ -549,8 +604,7 @@ class ColmenaQueues:
 
         # Pull a record off of the queue
         topic, message = self._get_request(timeout)
-        logger.debug(
-            f'Received a task message with topic {topic} inbound queue')
+        logger.debug(f'Received a task message with topic {topic} inbound queue')
 
         # Get the message
         task = Result.parse_raw(message)
