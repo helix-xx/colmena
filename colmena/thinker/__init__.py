@@ -102,6 +102,15 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
         # if True:
             # if no task to submit in 1 second, trigger evoscheduler, we move timer in sendinputs as a watch dog, thus we dont consifer all agnet
             # timer = threading.Timer(3, lambda: timeout_callback(thinker)) 
+            
+            # test dynamic task
+            # with thinker.queues.evosch_lock:
+            permit, info = thinker.queues.smart_sch.acquire_resources(task_type)
+            if permit == False:
+                continue
+                # sleep(10)
+                pass
+            thinker.logger.info(f'Agent pilot: topic {task_type} permit {permit} info {info}')
             thinker.logger.info(f'Acquired {n_slots} execution slots of type {task_type}')
             start_time = perf_counter()
             try:

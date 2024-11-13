@@ -5,6 +5,7 @@ from ctypes import Union
 from itertools import accumulate
 from pathlib import Path
 import logging
+import uuid
 import re
 import shutil
 from collections import deque, OrderedDict, defaultdict
@@ -29,6 +30,9 @@ from colmena.models import Result
 
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+from sklearn.pipeline import Pipeline
 
 relative_path = "~/project/colmena/multisite_"
 absolute_path = os.path.expanduser(relative_path)
@@ -47,6 +51,135 @@ def dataclass_to_dict(obj):
         return {key: dataclass_to_dict(value) for key, value in obj.items()}
     else:
         return obj
+
+
+class agent_pilot:
+    # 使用历史提交任务建模多项式拟合，判断那种任务适合作为下一次提交任务
+    # 如果agent停在用户逻辑内部，调度器难以通过agent触发
+    # 如果agent停在用户逻辑外部，调度器需要接管用户控制
+    agent_dict = None
+
+    acquire_level = None  # info for resources util
+
+    # agent resources model {agent_name: agent_info} agent_info:[permit_submit, resources_avail]
+    # resouces_level
+
+    def __init__(self, sch_data, resources_rate, available_resources, util_level):
+        # self.provision_resources = resources_rate * available_resources
+
+        self.sch_data:Sch_data = sch_data
+        self.resources_rate = resources_rate
+        self.available_resources = available_resources
+        self.util_level = util_level
+
+    def build_agent_model():
+        # resources model from his data
+        # add new result
+        # now we use average resources and time to predict
+        
+        pass
+
+
+    # call in agent / 避免被动call 主动调用agent提供资源？ 轮询？
+    def acquire_resources(self, method):
+        pass
+
+
+class SmartScheduler:
+    # support different scheduling policy here
+    
+    ## init all sch model here
+    # sch_data can be menber of all member model
+    def __init__(self, methods, available_task_capacity, available_resources, sch_config= None):
+        self.sch_data: Sch_data = Sch_data()
+        # self.agent_pilot = agent_pilot(sch_data=self.sch_data, resources_rate=2, available_resources=available_resources, util_level=0.8)
+        self.sch_data.init_avail_task(available_task(methods), available_task_capacity)
+        self.sch_data.init_hist_task(HistoricalData(methods))
+        self.sch_data.init_task_time_predictor(methods, self.sch_data.historical_task_data.features)
+        self.evo_sch: evosch2 = evosch2(resources=available_resources, at=self.sch_data.avail_task, hist_data=self.sch_data.historical_task_data, sch_data=self.sch_data)
+        
+        #agent_pilot
+        self.resources_rate = 2
+        self.available_resources = available_resources
+        self.util_level = 0.1
+        
+        self.best_result = None
+        
+    
+    def acquire_resources(self, key):
+        # topic与method不一样，暂时添加一个映射
+        topic_method_mapping = {
+            'simulate': 'run_calculator',
+            'sample': 'run_sampling',
+            'train': 'train',
+            'infer': 'evaluate'
+        }
+        
+        method = topic_method_mapping.get(key, None)  # 根据给定的 key 获取对应的方法
+        
+        pilot_task = self.sch_data.pilot_task.get(method, None)
+        info = {}
+        if not pilot_task:
+            info['reason'] = "no pilot task"
+            return True, info
+        else:
+            ind = self.best_result
+            if not ind:
+                info['reason'] = 'no previous info'
+                return True, info
+            total_cpu_time, total_gpu_time, completion_time = self.evo_sch.calc_utilization(ind)
+            
+            all_tasks = self.sch_data.avail_task.get_all()
+            all_tasks = copy.deepcopy(all_tasks)
+            pilot_task = copy.deepcopy(pilot_task)
+            self.sch_data.renew_task_uuid(pilot_task)
+            
+            all_tasks = self.sch_data.avail_task.dummy_add_task_id(method, pilot_task['task_id'], all_tasks=all_tasks)
+            self.sch_data.add_sch_task(pilot_task)
+            _ = self.evo_sch.run_ga(all_tasks)
+            new_ind = self.evo_sch.best_ind
+            new_total_cpu_time, new_total_gpu_time, new_completion_time = self.evo_sch.calc_utilization(new_ind)
+            self.sch_data.pop_sch_task(pilot_task)
+            
+            # evaluate resources
+            node_cpu_count = {node: self.available_resources[node]['cpu'] for node in self.available_resources.keys()}
+            node_gpu_count = {node: self.available_resources[node]['gpu'] for node in self.available_resources.keys()}
+
+            current_cpu_utilization = {node: (total_cpu_time[node] / (completion_time[node] * node_cpu_count[node]) if completion_time[node] > 0 else 0) for node in total_cpu_time}
+            new_cpu_utilization = {node: (new_total_cpu_time[node] / (new_completion_time[node] * node_cpu_count[node]) if new_completion_time[node] > 0 else 0) for node in new_total_cpu_time}
+            
+            current_gpu_utilization = {node: (total_gpu_time[node] / (completion_time[node] * node_gpu_count[node]) if completion_time[node] > 0 else 0) for node in total_gpu_time}
+            new_gpu_utilization = {node: (new_total_gpu_time[node] / (new_completion_time[node] * node_gpu_count[node]) if new_completion_time[node] > 0 else 0) for node in new_total_gpu_time}
+            
+            # 计算利用率提升比例
+            utilization_improvement = {}
+            for node in current_cpu_utilization:
+                cpu_improvement_ratio = (
+                    (new_cpu_utilization[node] - current_cpu_utilization[node]) / current_cpu_utilization[node]
+                    if current_cpu_utilization[node] > 0 else float('inf')
+                )
+                gpu_improvement_ratio = (
+                    (new_gpu_utilization[node] - current_gpu_utilization[node]) / current_gpu_utilization[node]
+                    if current_gpu_utilization[node] > 0 else float('inf')
+                )
+                
+                utilization_improvement[node] = {
+                    'cpu': cpu_improvement_ratio,
+                    'gpu': gpu_improvement_ratio
+                }
+            
+            # 检查是否有提升达到设定的 util_level
+            # 设置的提升阈值（例如10%）
+            info = utilization_improvement
+            for node, improvement in utilization_improvement.items():
+                if improvement['cpu'] >= self.util_level or improvement['gpu'] >= self.util_level:
+                    # info['utilization_improvement'] = improvement
+                    info['reason'] = "utilize improvement"
+                    return True, info
+            
+            info['reason'] = "no utilize improvement"
+            return False, info
+
 
 # evo stargety here
 @dataclass
@@ -109,17 +242,83 @@ class individual:
             json.dump(dataclass_to_dict(self), f, indent=4)
 
 
+class Sch_data(SingletonClass):
+    def __init__(self):
+        self.result_list = {}
+        self.sch_task_list = {}
+        self.pilot_task = {}
+        self.Task_time_predictor: TaskTimePredictor = None
+        self.avail_task: available_task = None
+        self.avail_task_cap: int = None
+
+    def init_hist_task(self, historical_task_data):
+        self.historical_task_data:HistoricalData = historical_task_data
+
+    def init_avail_task(self, avail_task_data, avail_task_cap):
+        self.avail_task = avail_task_data
+        self.avail_task_cap = avail_task_cap
+    
+    def init_task_time_predictor(self, methods, features):
+        self.Task_time_predictor = TaskTimePredictor(methods, features)
+
+    def add_result_obj(self, result: Result):
+        logger.info('add task to scheduler {}'.format(result.task_id))
+        self.result_list[result.task_id] = result
+        sch_task = self.historical_task_data.get_sch_task_from_result_object(result)
+        logger.info(f"sch_task: {sch_task}")
+        self.sch_task_list[sch_task['task_id']] = sch_task
+
+    def pop_result_obj(self, task):
+        logger.info('remove task from scheduler {}'.format(task['task_id']))
+        sch_task = self.sch_task_list.pop(task['task_id'])
+        self.pilot_task[sch_task['method']] = sch_task
+        return self.result_list.pop(task['task_id'])
+    
+    def add_sch_task(self, sch_task):
+        self.sch_task_list[sch_task['task_id']] = sch_task
+        
+    def pop_sch_task(self, task):
+        logger.info('pop sch task {}'.format(task['task_id']))
+        return self.sch_task_list.pop(task['task_id'])
+    
+    def renew_task_uuid(self, sch_task):
+        new_task_id = uuid.uuid4()
+        while str(new_task_id) in self.sch_task_list:
+            new_task_id = uuid.uuid4()
+        sch_task['task_id'] = str(new_task_id)
+
+    def get_result_obj(self, task):
+        return self.result_list.get(task['task_id'])
+    
+    def get_sch_task(self, task):
+        return self.sch_task_list.get(task['task_id'])
+
+    def get_result_list_len(self):
+        return len(self.result_list)
+
+
+class Avail_task(SingletonClass):
+    # only save useful data from features in result object
+    # methods
+    # task_id
+    # resources
+    # input size
+    # some input paremeters defined by user
+    def __init__(self):
+        pass
+
+    # maybe we dont need develop this class
+
+
 @dataclass
 class available_task(SingletonClass):
     # task_names: list[str] = field(default_factory=list)
-    # task_ids: list[dict[str, int]] = field(default_factory=list)
+    # task_ids: list[dict[str, int]] = field(default_factory=dict)
+
     # def __init__(self,task_names: set[str], task_ids: dict[str, int], task_datas=None):
-    def __init__(self, task_ids: dict[str, list[str]] = None):
-        # print(type(task_names))
-        ## TODO task_names is set, but not work while get a str in it
-        # self.task_names = set()
-        # self.task_names = self.task_names.update(task_names)
-        self.task_ids = task_ids
+    # def __init__(self, task_ids: dict[str, list[str]] = None):
+    def __init__(self, task_methods: list[str]):
+        self.task_ids = {method: [] for method in task_methods}
 
     def add_task_id(self, task_name: str, task_id: Union[str, list[str]]):
         # if task_name not in self.task_names:
@@ -127,6 +326,15 @@ class available_task(SingletonClass):
         task_id = [task_id] if isinstance(task_id, str) else task_id
         for i in task_id:
             self.task_ids[task_name].append(i)
+    
+    def dummy_add_task_id(self, task_name: str, task_id: Union[str, list[str]], all_tasks):
+        # if task_name not in self.task_names:
+        #     self.task_names.add(task_name)
+        task_id = [task_id] if isinstance(task_id, str) else task_id
+        for i in task_id:
+            # self.task_ids[task_name].append(i)
+            all_tasks[task_name].append(i)
+        return all_tasks
 
     def remove_task_id(self, task_name: str, task_id: Union[str, list[str]]):
         ## judge if there is task id
@@ -153,18 +361,248 @@ class available_task(SingletonClass):
     def get_all(self):
         return self.task_ids
 
-    def get_task_nums(self):
+    def get_task_nums(self, all_tasks):
         result = {}
-        for key, value in self.task_ids.items():  # key: task name, value:task id list
+        for key, value in all_tasks.items():  # key: task name, value:task id list
             result[key] = len(value)
         return result
 
-    def get_total_nums(self):
-        return sum(self.get_task_nums().values())
+    def get_total_nums(self, all_tasks = None):
+        if all_tasks == None:
+            all_tasks = self.get_all()
+        return sum(self.get_task_nums(all_tasks).values())
+
+
+class HistoricalData:
+    # default feature parameters for each method performance model
+    # features: Dict[str, List[str]] = field(
+    #     default_factory=lambda: {
+    #         "default": [
+    #             "method",
+    #             "message_sizes.inputs",
+    #             "resources.cpu",
+    #             "resources.gpu",
+    #             "time_running",
+    #         ]
+    #     }
+    # )
+
+    def __init__(self, methods: Collection[str], queue=None):
+        self.methods = methods
+        self.features = {
+            "default": [
+                "task_id",
+                "method",
+                "message_sizes.inputs",
+                "resources.cpu",
+                "resources.gpu",
+                "time_running",
+            ]
+        }
+        # self.submit_task_seq = []
+        # self.complete_task_seq = []
+        # self.trigger_info = []
+        self.historical_data = {method: [] for method in methods}
+
+    def add_feature_from_user(self, method: str, feature_values: List[str]):
+        if method not in self.features:
+            self.features[method] = self.features["default"][:]
+
+        self.features[method].extend(feature_values)
+
+    def add_data(self, feature_values: Dict[str, Any]):
+        method = feature_values["method"]
+        if method not in self.historical_data:
+            logger.warning(f"method {method} not in historical data")
+        self.historical_data[method].append(feature_values)
+
+
+    def get_features_from_result_object(self, result: Result):
+        feature_values = {}
+        for feature in self.features['default']:
+            value = result
+            for key in feature.split('.'):
+                if isinstance(value, dict):
+                    value = value.get(key)
+                    break
+                else:
+                    value = getattr(value, key)
+            if feature == 'resources.gpu':
+                value = (
+                    len(value) if isinstance(value, list) else value
+                )  # 如果是list，则取长度，否则默认为0
+                # if value is None:
+                #     break
+            feature_values[feature] = value
+        self.add_data(feature_values)
+        
+    def get_sch_task_from_result_object(self, result: Result):
+        feature_values = {}
+        for feature in self.features['default']:
+            value = result
+            for key in feature.split('.'):
+                if isinstance(value, dict):
+                    value = value.get(key)
+                    break
+                else:
+                    value = getattr(value, key)
+            if feature == 'resources.gpu':
+                value = (
+                    len(value) if isinstance(value, list) else value
+                )  # 如果是list，则取长度，否则默认为0
+                # if value is None:
+                #     break
+            feature_values[feature] = value
+        return feature_values
+
+    def get_features_from_his_json(self, his_json: Union[str, list[str]]):
+        for path in his_json:
+            with open(path, 'r') as f:
+                for line in f:
+                    json_line = json.loads(line)
+                    feature_values = {}
+                    for feature in self.features['default']:
+                        value = json_line
+                        for key in feature.split('.'):
+                            value = value.get(key)
+                            # if value is None:
+                            #     break
+                        feature_values[feature] = value
+                    self.add_data(feature_values)
+                    
+    # def calculate_task_average_metrics(self):
+    #     """ Calculate the average resources and runtime for each method. """
+    #     # because no linear performance; should improved
+    #     averages = {}
+    #     for method, data in self.historical_data.items():
+    #         if not data:
+    #             continue  # Skip if there's no data for the method
+            
+    #         total_cpu = total_gpu = total_time = 0
+    #         count = len(data)
+
+    #         for entry in data:
+    #             total_cpu += entry.get("resources.cpu", 0)
+    #             total_gpu += entry.get("resources.gpu", 0)
+    #             total_time += entry.get("time_running", 0)
+
+    #         averages[method] = {
+    #             "average_cpu": total_cpu / count,
+    #             "average_gpu": total_gpu / count,
+    #             "average_time": total_time / count,
+    #         }
+
+    #     return averages
+
+
+class TaskTimePredictor:
+    # set smart scheduler config for model and parameters
+    random_forest_models: dict[str, RandomForestRegressor] = field(default_factory=dict)
+    polynomial_models: dict[str, Any] = field(default_factory=dict)
+    def __init__(self, methods, features):
+        self.features = features
+        self.random_forest_models = {}
+        self.polynomial_models = {}
+        for method in methods:
+        #     self.random_forest_models[method] = RandomForestRegressor(
+        #         n_estimators=100, random_state=42, n_jobs=-1
+        #     )
+        
+            self.polynomial_models[method] = None
+
+    # unify train function?
+    def random_forest_train(self):
+        pass
+
+    def polynomial_train(self, train_data):
+        for method, data in train_data.items():
+            # model = np.polyfit(data['x'], data['y'], 3)
+            # self.polynomial_models[method] = model
+            df = pd.DataFrame(data)
+            df.dropna(inplace=True)
+            if len(data) < 5:
+                continue
+
+            x = df.drop(columns=['time_running', 'method', 'task_id'])
+            y = df['time_running']
+
+            # polunomialfeatures or np.polyfit
+            poly_model = Pipeline(
+                [
+                    ('poly_features', PolynomialFeatures(degree=3)),
+                    ('linear_model', LinearRegression()),
+                ]
+            )
+            poly_model.fit(x, y)
+            self.polynomial_models[method] = poly_model
+
+    def estimate_time(self, task):
+        method = task['method']
+        # result: Result = self.queue.result_list[task['task_id']]
+
+        # Polynomial Prediction
+        poly_model = self.polynomial_models[method]
+        # task_features = self.extract_feature_from_task(task, result)
+        X_poly = pd.DataFrame([task]).drop(columns=['time_running', 'method', 'task_id'])
+        poly_prediction = poly_model.predict(X_poly)[0] if poly_model else None
+
+        return poly_prediction
+
+    def extract_feature_from_task(self, task: Result, result: Result):
+        task_features = {}
+        for feature in self.features['default']:
+            value = result
+            for key in feature.split('.'):
+                if isinstance(value, dict):
+                    value = value.get(key)
+                else:
+                    value = getattr(value, key)
+            if key in task['resources']:
+                value = task['resources'][key]
+            task_features[feature] = value
+        return task_features
+        
+
+    def estimate_ga_population(self, population, sch_task_list, all_node=False):
+
+        tasks_by_model = {}  # 以模型为键，将任务分组存储
+        for ind in population:
+            if all_node:
+                task_allocation = []
+                for key in ind.task_allocation_node.keys():
+                    task_allocation.extend(ind.task_allocation_node[key])
+            else:
+                task_allocation = ind.task_allocation
+
+            for task in task_allocation:
+                model_name = task['name']
+                if model_name not in tasks_by_model:
+                    tasks_by_model[model_name] = []
+                tasks_by_model[model_name].append(task)
+
+        for model_name, tasks in tasks_by_model.items():
+            # model = self.random_forest_model[model_name]  # 获取对应的模型
+            model = self.polynomial_models[model_name]
+
+            feature_values = []
+            for task in tasks:
+                # result: Result = result_list[task['task_id']]
+                # feature_dict = self.extract_feature_from_task(task, result)
+                feature = sch_task_list[task['task_id']]
+                feature_values.append(feature)
+
+            X = pd.DataFrame(feature_values).drop(columns=['time_running', 'method', 'task_id'])
+            predictions = model.predict(X)
+
+            for task, runtime in zip(tasks, predictions):
+                task['total_runtime'] = runtime
+                # logger.info(f"Predicted runtime for task {task['task_id']}: {runtime}")
 
 
 @dataclass
-class historical_data(SingletonClass):
+class historical_data(
+    SingletonClass
+):  # change to sch data, contain all data and transfer to child class in queue / thinker
     features = [
         "method",
         "message_sizes.inputs",
@@ -197,72 +635,72 @@ class historical_data(SingletonClass):
 
         self.queue = queue
 
-    def get_child_task(self, methods):
-        submit_task_seq = deepcopy(self.submit_task_seq)
-        complete_task_seq = deepcopy(self.complete_task_seq)
-        whole_seq = submit_task_seq + complete_task_seq
-        whole_seq.sort(key=lambda x: x['time'])
-        now_submit = {}
-        pre_complete = {}
-        has_submit = False
-        has_complete = False
+    # 根据任务提交和完成序列进行分析，以推测未来可能提交的任务
+    # def get_child_task(self, methods):
+    #     submit_task_seq = deepcopy(self.submit_task_seq)
+    #     complete_task_seq = deepcopy(self.complete_task_seq)
+    #     whole_seq = submit_task_seq + complete_task_seq
+    #     whole_seq.sort(key=lambda x: x['time'])
+    #     now_submit = {}
+    #     pre_complete = {}
+    #     has_submit = False
+    #     has_complete = False
 
-        def initialize():
+    #     def initialize():
+    #         for method in methods:
+    #             now_submit[method] = 0
+    #             pre_complete[method] = 0
 
-            for method in methods:
-                now_submit[method] = 0
-                pre_complete[method] = 0
+    #     def record():
+    #         self.trigger_info.append(
+    #             {"submit": deepcopy(now_submit), "complete": deepcopy(pre_complete)}
+    #         )
+    #         initialize()
 
-        def record():
-            self.trigger_info.append(
-                {"submit": deepcopy(now_submit), "complete": deepcopy(pre_complete)}
-            )
-            initialize()
+    #     initialize()
 
-        initialize()
+    #     while whole_seq:
+    #         task = whole_seq.pop()
+    #         if task["type"] == "submit":
+    #             if has_submit and has_complete:
+    #                 record()
+    #                 has_complete = False
+    #             now_submit[task["method"]] += 1
+    #             has_submit = True
+    #         elif has_submit:
+    #             pre_complete[task["method"]] += 1
+    #             has_complete = True
+    #         else:
+    #             # no submit task after complete task
+    #             # just pass
+    #             pass
+    #     # After processing all tasks, record any remaining tasks
+    #     if has_submit and has_complete:
+    #         record()
 
-        while whole_seq:
-            task = whole_seq.pop()
-            if task["type"] == "submit":
-                if has_submit and has_complete:
-                    record()
-                    has_complete = False
-                now_submit[task["method"]] += 1
-                has_submit = True
-            elif has_submit:
-                pre_complete[task["method"]] += 1
-                has_complete = True
-            else:
-                # no submit task after complete task
-                # just pass
-                pass
-        # After processing all tasks, record any remaining tasks
-        if has_submit and has_complete:
-            record()
+    #     return self.trigger_info
 
-        return self.trigger_info
+    # # get the last trigger info until all method has trigger submit task
+    # def get_closest_trigger_info(self):
+    #     cloest_trigger_info = []
+    #     method_flag = {}
+    #     for method in self.methods:
+    #         method_flag[method] = False
+    #     for info in self.trigger_info:
+    #         cloest_trigger_info.append(info)
+    #         for method in self.methods:
+    #             if info["submit"][method] > 0:
+    #                 method_flag[method] = True
+    #         if all(method_flag.values()):
+    #             return cloest_trigger_info
 
-    # get the last trigger info until all method has trigger submit task
-    def get_closest_trigger_info(self):
-        cloest_trigger_info = []
-        method_flag = {}
-        for method in self.methods:
-            method_flag[method] = False
-        for info in self.trigger_info:
-            cloest_trigger_info.append(info)
-            for method in self.methods:
-                if info["submit"][method] > 0:
-                    method_flag[method] = True
-            if all(method_flag.values()):
-                return cloest_trigger_info
-
-    def get_child_task_time(self, method):
-        trigger_info = self.get_closest_trigger_info()
-        info = trigger_info.pop()
-        # get each task info from historyical data
-        # add to the individual task allocation
-        # TODO
-        pass
+    # def get_child_task_time(self, method):
+    #     trigger_info = self.get_closest_trigger_info()
+    #     info = trigger_info.pop()
+    #     # get each task info from historyical data
+    #     # add to the individual task allocation
+    #     # TODO
+    #     pass
 
     def add_data(self, feature_values: dict[str, Any]):
         method = feature_values['method']
@@ -320,7 +758,7 @@ class historical_data(SingletonClass):
             X = []
             y = []
             for feature_values in data:
-                X = df.drop(columns=['time_running', 'method'])
+                X = df.drop(columns=['time_running', 'method', 'task_id'])
                 y = df['time_running']
             # X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=1.0, random_state=42)
             model.fit(X, y)
@@ -346,7 +784,7 @@ class historical_data(SingletonClass):
             if key in task['resources']:
                 value = task['resources'][key]
             feature_values[feature] = value
-        X = pd.DataFrame([feature_values]).drop(columns=['time_running', 'method'])
+        X = pd.DataFrame([feature_values]).drop(columns=['time_running', 'method', 'task_id'])
         return model.predict(X)[0]
 
     def estimate_batch(self, population, all_node=False):
@@ -389,7 +827,7 @@ class historical_data(SingletonClass):
                 feature_dict = extract_feature_values(task, result)
                 feature_values.append(feature_dict)
 
-            X = pd.DataFrame(feature_values).drop(columns=['time_running', 'method'])
+            X = pd.DataFrame(feature_values).drop(columns=['time_running', 'method', 'task_id'])
             predictions = model.predict(X)
 
             for task, runtime in zip(tasks, predictions):
@@ -406,7 +844,8 @@ class evosch2:
         self,
         resources: dict = None,
         at: available_task = None,
-        hist_data=historical_data,
+        hist_data:historical_data = None,
+        sch_data: Sch_data = None,
         population_size=10,
     ):
         # self.his_population = set() # should following round consider history evo result?
@@ -420,8 +859,9 @@ class evosch2:
             )  # TODO gpu nums change to gpu_devices ids; next we need get ids from config
         self.resources_evo: dict = copy.deepcopy(self.resources)  # used in evosch
         logger.info("total resources: {}".format(self.resources_evo))
-        self.hist_data = hist_data
-        self.at = at  # available task
+        # self.hist_data: historical_data = hist_data
+        self.sch_data: Sch_data = sch_data
+        self.at: available_task = at  # available task
         self.population = []  # [individual,,,] # store all individual on single node
         self.population_node = defaultdict(
             list
@@ -439,8 +879,6 @@ class evosch2:
 
         # TODO acquire task
         self.prepared_task = defaultdict(list)
-
-    ## TODO estimate runtime background and generate new individual
 
     def get_dict_list_nums(self, dict_list: dict):
         """
@@ -504,27 +942,34 @@ class evosch2:
         # detect submit task sequence to choose proper task to run
         pass
 
-    def detect_no_his_task(self, total_nums=5):
+    def detect_no_his_task(self, all_tasks, total_nums=5):
         '''
         detect if there is task not in historical data
         without historical data, estimate method cannot work, we need run them first, and record the historical data to train the model
         return the individual contain no record task
-        # get all node resource or get user predifine resource
+        # get all node resource or get user predefine resource
         '''
+        if all_tasks == None:
+            all_tasks = {}
         task_queue = defaultdict(list)
         predict_running_seq = defaultdict(list)
-        all_tasks = self.at.get_all()
+        # all_tasks = self.at.get_all()
         which_node = self.generate_node()
         for name, ids in all_tasks.items():
             avail = len(ids)
             hist = len(
-                self.hist_data.historical_data[name]
+                # self.hist_data.historical_data[name]
+                self.sch_data.historical_task_data.historical_data[name]
             )  # we dont have historical data for estimate
             if (hist < total_nums) and (avail > 0):
                 # cpu choices
-                predefine_cpu = getattr(
-                    self.hist_data.queue.result_list[ids[0]].resources, 'cpu'
-                )
+                # predefine_cpu = getattr(
+                #     # self.hist_data.queue.result_list[ids[0]].resources, 'cpu'
+                #     self.sch_data.result_list[ids[0]].resources, 'cpu'
+                # )
+                # logger.info(f"predefine cpu: {predefine_cpu}")
+                predefine_cpu = self.sch_data.sch_task_list[ids[0]]['resources.cpu']
+                logger.info(f"predefine cpu: {predefine_cpu}")
                 cpu_lower_bound = min(2, predefine_cpu // 2)
                 cpu_upper_bound = max(
                     self.node_resources.values(), key=lambda x: x['cpu']
@@ -542,9 +987,13 @@ class evosch2:
                 )
 
                 # gpu choices
-                predefine_gpu = getattr(
-                    self.hist_data.queue.result_list[ids[0]].resources, 'gpu'
-                )
+                # predefine_gpu = getattr(
+                #     # self.hist_data.queue.result_list[ids[0]].resources, 'gpu'
+                #     self.sch_data.result_list[ids[0]].resources, 'gpu'
+                # )
+                # logger.info(f"predefine gpu: {predefine_gpu}")
+                predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
+                logger.info(f"predefine gpu: {predefine_gpu}")
                 if predefine_gpu == 0:  # this task do not use gpu
                     gpu_choices = np.linspace(
                         0, 0, num=sample_nums, endpoint=True, retstep=False, dtype=int
@@ -637,7 +1086,8 @@ class evosch2:
                     # add to the list
                     task_id = best_fit_task.task_id
                     name = best_fit_task.method
-                    self.hist_data.queue.result_list[task_id] = best_fit_task
+                    # self.hist_data.queue.result_list[task_id] = best_fit_task
+                    self.sch_data.add_result_obj(best_fit_task)
                     self.at.add_task_id(task_name=name, task_id=task_id)
                     # add to ind
                     predefine_cpu = getattr(
@@ -655,7 +1105,10 @@ class evosch2:
                             "total_runtime": 0,
                         },
                     }
-                    total_runtime = self.hist_data.estimate_time(new_task)
+                    # total_runtime = self.hist_data.estimate_time(new_task)
+                    total_runtime = self.sch_data.Task_time_predictor.estimate_time(
+                        self.sch_data.get_sch_task(new_task)
+                    )
                     new_task['total_runtime'] = total_runtime
                     ind.task_allocation_node[node].append(new_task)
                     ind.task_allocation.append(new_task)
@@ -958,13 +1411,13 @@ class evosch2:
             yield nodes[index]
             index = (index + 1) % len(nodes)
 
-    def generate_population_node(self, population_size: int):
+    def generate_population_node(self, all_tasks, population_size: int):
         ## choose a node in cycle
 
         which_node = self.generate_node()
         ## add all task to individual
-        task_nums = self.at.get_task_nums()
-        all_tasks = self.at.get_all()
+        task_nums = self.at.get_task_nums(all_tasks)
+        # all_tasks = self.at.get_all()
         population = []
         cpu_upper_bound = min(self.node_resources.values(), key=lambda x: x['cpu'])[
             'cpu'
@@ -1046,12 +1499,20 @@ class evosch2:
         for name, ids in all_tasks.items():
             if len(ids) == 0:
                 continue
-            predefine_cpu = getattr(
-                self.hist_data.queue.result_list[ids[0]].resources, 'cpu'
-            )  # this type task predifine cpu resources
-            predefine_gpu = getattr(
-                self.hist_data.queue.result_list[ids[0]].resources, 'gpu'
-            )
+            # predefine_cpu = getattr(
+            #     # self.hist_data.queue.result_list[ids[0]].resources, 'cpu'
+            #     self.sch_data.result_list[ids[0]].resources, 'cpu'
+            # )  # this type task predifine cpu resources
+            # logger.info(f"predefine cpu: {predefine_cpu}")
+            predefine_cpu = self.sch_data.sch_task_list[ids[0]]['resources.cpu']
+            logger.info(f"predefine cpu: {predefine_cpu}")
+            # predefine_gpu = getattr(
+            #     # self.hist_data.queue.result_list[ids[0]].resources, 'gpu'
+            #     self.sch_data.result_list[ids[0]].resources, 'gpu'
+            # )
+            # logger.info(f"predefine gpu: {predefine_gpu}")
+            predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
+            logger.info(f"predefine gpu: {predefine_gpu}")
             for task_id in ids:
                 # task = self.hist_data.queue.result_list[task_id]
                 # cpu = getattr(task.resources,'cpu')
@@ -1349,11 +1810,13 @@ class evosch2:
 
     def run_ga(
         self,
+        all_tasks:list[dict[str, int]],
         num_population: int = 10,
         num_generations_all: int = 5,
         num_generations_node: int = 20,
-    ):
-        logger.info(f"Starting GA with available tasks: {self.at.get_all()}")
+    )->list:
+        start_time = time.time()
+        logger.info(f"Starting GA with available tasks: {all_tasks}")
         logger.info(
             f"on going task:{self.running_task_node}, resources:{self.resources}, node_resources:{self.node_resources}"
         )
@@ -1367,23 +1830,27 @@ class evosch2:
 
         # TODO try multi process here, check if memory leak
         # run no record task
-        ind = self.detect_no_his_task()
+        ind = self.detect_no_his_task(all_tasks)
         if len(ind.task_allocation) > 0:
             return ind.task_allocation
 
-        self.population = self.generate_population_node(1)
+        self.population = self.generate_population_node(all_tasks=all_tasks, population_size=1)
 
         # train random forest model for predict running time
-        self.hist_data.random_forest_train()
+        # self.hist_data.random_forest_train()
+        self.sch_data.Task_time_predictor.polynomial_train(self.sch_data.historical_task_data.historical_data)
 
         pop_size = len(self.population)
 
         # first we can estimate every task running time
-        self.hist_data.estimate_batch(self.population, all_node=True)
+        # self.hist_data.estimate_batch(self.population, all_node=True)
+        self.sch_data.Task_time_predictor.estimate_ga_population(
+            self.population, self.sch_data.sch_task_list, all_node=True
+        )
         scores = [self.fitness(ind, all_node=True) for ind in self.population]
         self.population = [self.population[i] for i in np.argsort(scores)[::-1]]
         # only one task , submit directly
-        if self.at.get_total_nums() == 1:  
+        if self.at.get_total_nums(all_tasks) == 1:
             logger.info(f"Only one task, submit directly")
             self.best_ind = self.population[-1]  # predifined resources at last in list
             best_allocation = []
@@ -1448,9 +1915,12 @@ class evosch2:
                             self.opt2(population, ind2)
                             self.opt_gpu(population, ind1)
                             self.opt_gpu(population, ind2)
-                        self.hist_data.estimate_batch(
-                            population, all_node=False
-                        )  # cal predict running time for each task
+                        # self.hist_data.estimate_batch(
+                        #     population, all_node=False
+                        # )  # cal predict running time for each task
+                        self.sch_data.Task_time_predictor.estimate_ga_population(
+                            self.population, self.sch_data.sch_task_list, all_node=True
+                        )
                         scores = [
                             self.fitness(ind, all_node=False) for ind in population
                         ]
@@ -1484,6 +1954,8 @@ class evosch2:
         best_allocation = []
         for key in best_ind.task_allocation_node.keys():
             best_allocation.extend(best_ind.task_allocation_node[key])
+
+        logger.info("GA running time: %s seconds" % (time.time() - start_time))
         return best_allocation
 
 
