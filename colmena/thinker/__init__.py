@@ -105,17 +105,21 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
             
             # test dynamic task
             # with thinker.queues.evosch_lock:
-            permit, info = thinker.queues.smart_sch.acquire_resources(task_type)
-            if permit == False:
-                continue
-                # sleep(10)
-                pass
-            thinker.logger.info(f'Agent pilot: topic {task_type} permit {permit} info {info}')
-            thinker.logger.info(f'Acquired {n_slots} execution slots of type {task_type}')
+            # thinker.logger.info('agent {} acquire resources'.format(task_type))
+            with thinker.queues.evosch_lock:
+                permit, info = thinker.queues.smart_sch.acquire_resources(task_type)
+            # if permit == -1:
+            #     time.sleep(10)
+            #     continue
+            # close dynamic
+            # permit = 0
+            # info = {}
+            # thinker.logger.info(f'Agent pilot: topic {task_type} permit {permit} info {info}')
+            # thinker.logger.info(f'Acquired {n_slots} execution slots of type {task_type}')
             start_time = perf_counter()
             try:
                 # timer.start()
-                process_func(thinker)
+                process_func(thinker, permit=permit, info=info)
             finally:
                 # timer.cancel()
                 pass

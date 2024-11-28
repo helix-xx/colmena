@@ -465,6 +465,7 @@ class ColmenaQueues:
                     )
                     self.smart_sch.evo_sch.resources[node]['cpu'] -= cpu_value
                     self.smart_sch.evo_sch.resources[node]['gpu'] -= gpu_value
+                    # self.smart_sch.evo_sch.allocate_resources(task)
 
                     # 从原始 best_allocation 列表中移除该任务
                     best_allocation.remove(task)
