@@ -25,6 +25,8 @@ import psutil
 import gc
 import heapq
 import threading
+import multiprocessing
+import queue
 from dataclasses import dataclass, field, asdict, is_dataclass
 
 from colmena.models import Result
@@ -98,15 +100,28 @@ class SmartScheduler:
         self.sch_data.init_hist_task(HistoricalData(methods))
         self.sch_data.init_task_time_predictor(methods, self.sch_data.historical_task_data.features)
         self.evo_sch: evosch2 = evosch2(resources=available_resources, at=self.sch_data.avail_task, hist_data=self.sch_data.historical_task_data, sch_data=self.sch_data)
+        self.fcfs_sch: FCFSScheduler = FCFSScheduler(resources=available_resources, at=self.sch_data.avail_task, hist_data=self.sch_data.historical_task_data, sch_data=self.sch_data)
         
         #agent_pilot
         self.resources_rate = 2
         self.available_resources = available_resources
+        self.record_resources = copy.deepcopy(available_resources)
         self.util_level = 0.1
         self.exceed_area_limit = 1.1
         self.exceed_completion_time_limit = 1.1
         
         self.best_result = None
+        
+        # lock
+        self.sch_lock = threading.Lock()
+        
+        # processes = len(self.node_resources)
+        processes = 4
+        self.pool = multiprocessing.Pool(processes=processes)
+        
+    def __del__(self):
+        self.pool.close()
+        self.pool.join()
         
     
     def acquire_resources(self, key):
@@ -140,7 +155,7 @@ class SmartScheduler:
             
             all_tasks = self.sch_data.avail_task.dummy_add_task_id(method, pilot_task['task_id'], all_tasks=all_tasks)
             self.sch_data.add_sch_task(pilot_task)
-            _ = self.evo_sch.run_ga(all_tasks)
+            _ = self.run_sch()
             new_ind = self.evo_sch.best_ind
             new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time = self.evo_sch.calc_utilization(new_ind)
             self.sch_data.pop_sch_task(pilot_task)
@@ -173,7 +188,7 @@ class SmartScheduler:
                 }
                 
             # 计算计算时间的延长
-            completion_time_improvement = {node: (new_completion_time[node] - completion_time[node]) / completion_time[node]  for node in completion_time}
+            completion_time_improvement = {node: (new_completion_time[node] - completion_time[node]) / completion_time[node]  if completion_time[node] > 0 else 0 for node in completion_time}
             
             used_cpu_area = sum(total_cpu_time_per_node.values())
             new_used_cpu_area = sum(new_total_cpu_time_per_node.values())
@@ -223,6 +238,15 @@ class SmartScheduler:
             # return 0, info
             info['reason'] = "no limit exceed"
             return 1, info
+        
+    def run_sch(self):
+        # run evo sch
+        with self.sch_lock:
+            all_tasks = self.sch_data.avail_task.get_all()
+            all_tasks = copy.deepcopy(all_tasks)
+            bese_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
+            self.best_result = self.evo_sch.best_ind
+            return bese_allocation
 
 
 # evo stargety here
@@ -312,11 +336,11 @@ class Sch_data(SingletonClass):
         logger.info(f"sch_task: {sch_task}")
         self.sch_task_list[sch_task['task_id']] = sch_task
 
-    def pop_result_obj(self, task):
-        logger.info('remove task from scheduler {}'.format(task['task_id']))
-        sch_task = self.sch_task_list.pop(task['task_id'])
+    def pop_result_obj(self, task_id):
+        logger.info('remove task from scheduler {}'.format(task_id))
+        sch_task = self.sch_task_list.pop(task_id)
         self.pilot_task[sch_task['method']] = sch_task
-        return self.result_list.pop(task['task_id'])
+        return self.result_list.pop(task_id)
     
     def add_sch_task(self, sch_task):
         self.sch_task_list[sch_task['task_id']] = sch_task
@@ -331,8 +355,9 @@ class Sch_data(SingletonClass):
             new_task_id = uuid.uuid4()
         sch_task['task_id'] = str(new_task_id)
 
-    def get_result_obj(self, task):
-        return self.result_list.get(task['task_id'])
+    def get_result_obj(self, task_id):
+        # return self.result_list.get(task['task_id'])
+        return self.result_list.get(task_id)
     
     def get_sch_task(self, task):
         return self.sch_task_list.get(task['task_id'])
@@ -879,6 +904,137 @@ class historical_data(
                 # logger.info(f"Predicted runtime for task {task['task_id']}: {runtime}")
 
 
+class FCFSScheduler:
+    def __init__(
+        self,
+        resources: dict = None,
+        at: available_task = None,
+        hist_data: historical_data = None,
+        sch_data: Sch_data = None
+    ):
+        self.node_resources = resources
+        self.resources = copy.deepcopy(self.node_resources)
+        for key, value in self.resources.items():
+            value['gpu_devices'] = list(range(value['gpu']))
+        self.at = at
+        self.sch_data = sch_data
+        self.running_task = []
+        self.running_task_node = defaultdict(list)
+        self.current_time = 0
+        
+        # priority queue for task
+        self.task_queue = []
+        
+        self.run_lock = threading.Lock()
+
+    def generate_node(self):
+        """Round-robin node selection"""
+        nodes = list(self.node_resources.keys())
+        index = 0
+        while True:
+            yield nodes[index]
+            index = (index + 1) % len(nodes)
+
+    def allocate_basic_resources(self, task_name, task_id):
+        """Allocate basic resources based on task requirements"""
+        predefine_cpu = self.sch_data.sch_task_list[task_id]['resources.cpu']
+        predefine_gpu = self.sch_data.sch_task_list[task_id]['resources.gpu']
+        return {
+            "cpu": predefine_cpu,
+            "gpu": predefine_gpu
+        }
+
+    def find_available_node(self, required_resources):
+        """Find first available node with enough resources"""
+        for node, resources in self.resources.items():
+            if (resources['cpu'] >= required_resources['cpu'] and 
+                resources['gpu'] >= required_resources['gpu']):
+                return node
+        return None
+    
+    # allocate and recover resources, with threadlock
+    def allocate_resources(self, result_obj:Result):
+        with self.run_lock:
+            cpu_value = getattr(result_obj.resources, 'cpu')
+            gpu_value = getattr(result_obj.resources, 'gpu')
+            node = getattr(result_obj.resources, 'node')
+            task_id = result_obj.task_id
+            name = result_obj.method
+            self.resources[node]['cpu'] -= cpu_value
+            self.resources[node]['gpu'] -= gpu_value
+            gpu_value, self.resources[node]['gpu_devices'] = (
+                self.resources[node]['gpu_devices'][
+                    :gpu_value
+                ],
+                self.resources[node]['gpu_devices'][
+                    gpu_value:
+                ],
+            )
+            # setattr(result_obj.resources, 'cpu', cpu_value)
+            # setattr(result_obj.resources, 'gpu', gpu_value)
+            result_obj.inputs[1]['gpu'] = gpu_value
+            result_obj.inputs[1]['cpu'] = cpu_value
+            # self.at.remove_task_id(task_name=name, task_id=task_id)
+    
+    def recover_resources(self, result_obj:Result):
+        with self.run_lock:
+            node = getattr(result_obj.resources, 'node')
+            gpu_value = result_obj.inputs[1]['gpu']
+            self.resources[node]['cpu'] += result_obj.resources.cpu
+            self.resources[node]['gpu'] += len(gpu_value)
+            self.resources[node]['gpu_devices'].extend(gpu_value)
+            # for task in  self.running_task_node[node]:
+            #     if task['task_id'] == result_obj.task_id:
+            #         self.running_task_node[node].remove(task)
+
+    def run_fcfs(self, all_tasks: list[dict[str, int]]) -> list:
+        """
+        FCFS调度算法的主要实现
+        按照任务到达顺序分配资源和节点
+        """
+        logger.info(f"Starting FCFS with available tasks: {all_tasks}")
+        
+        task_allocation = []
+        which_node = self.generate_node()
+        
+        # 按照任务到达顺序处理
+        for task_name, task_ids in all_tasks.items():
+            for task_id in task_ids:
+                # 获取基本资源需求
+                basic_resources = self.allocate_basic_resources(task_name, task_id)
+                
+                # 寻找可用节点
+                node = self.find_available_node(basic_resources)
+                if node is None:
+                    logger.warning(f"No available resources for task {task_name}:{task_id}")
+                    continue
+                
+                # 创建任务分配
+                new_task = {
+                    "name": task_name,
+                    "task_id": task_id,
+                    "resources": {
+                        "cpu": basic_resources['cpu'],
+                        "gpu": basic_resources['gpu'],
+                        "node": node
+                    }
+                }
+                
+                # 更新资源使用情况
+                self.resources[node]['cpu'] -= basic_resources['cpu']
+                self.resources[node]['gpu'] -= basic_resources['gpu']
+                
+                # 添加到分配列表
+                task_allocation.append(new_task)
+                
+                logger.info(f"Allocated task {task_name}:{task_id} to node {node}")
+                
+        return task_allocation
+    
+class Back_Filing_Scheduler:
+    pass
+
+# multiprocessing, class should be pickleable
 class evosch2:
     """add all task in individual
     cost function calculate total time idle time
@@ -892,12 +1048,8 @@ class evosch2:
         sch_data: Sch_data = None,
         population_size=10,
     ):
-        # multi threading support
-        # threading.lock
-        self.run_lock = threading.Lock()
-        
         # self.his_population = set() # should following round consider history evo result?
-        self.node_resources: dict = resources
+        self.node_resources: dict = resources # total resources for all node
         self.resources: dict = copy.deepcopy(
             self.node_resources
         )  # used in colmena base.py.  data: {"node1":{"cpu":56,"gpu":4},"node2":{"cpu":56,"gpu":4}} gpu is ids like [0, 1, 2, 3]
@@ -925,8 +1077,6 @@ class evosch2:
         )
         self.best_ind: individual = None
 
-        # TODO acquire task
-        self.prepared_task = defaultdict(list)
         
     # allocate and recover resources, with threadlock
     def allocate_resources(self, result_obj:Result):
@@ -1103,7 +1253,7 @@ class evosch2:
                     )
         ind = individual(
             tasks_nums=self.get_dict_list_nums(task_queue),
-            total_resources=copy.deepcopy(self.get_resources()),
+            total_resources=self.node_resources,
         )
         ind.task_allocation_node = task_queue
         task_allocation = []
@@ -1430,7 +1580,7 @@ class evosch2:
         # TODO tmp test, resources range should determine by node
         # generate random resources for individual
         for _ in range(population_size):
-            ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
+            ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=self.node_resources)
             task_queue = self.ind_init_task_allocation() # modify to multi node, dict{'node_name':[],'node_name':[]}
             for name, ids in all_tasks.items():
                 if len(ids)==0:
@@ -1459,7 +1609,7 @@ class evosch2:
             population.append(ind)
 
         # # initial resources minimum
-        ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=copy.deepcopy(self.get_resources()))
+        ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=self.node_resources)
         task_queue = self.ind_init_task_allocation()
         for name, ids in all_tasks.items():
             if len(ids)==0:
@@ -1490,7 +1640,7 @@ class evosch2:
         ## initial resources predifine
         ind = individual(
             tasks_nums=copy.deepcopy(task_nums),
-            total_resources=copy.deepcopy(self.get_resources()),
+            total_resources=self.node_resources,
         )
         task_queue = self.ind_init_task_allocation()
         for name, ids in all_tasks.items():
@@ -1536,7 +1686,7 @@ class evosch2:
             for i in range(pop_size):
                 n_ind = individual(
                     tasks_nums=copy.deepcopy(task_nums),
-                    total_resources=copy.deepcopy(self.node_resources[node]),
+                    total_resources=self.node_resources[node],
                 )
                 n_ind.task_allocation = copy.deepcopy(task_allocation_node[node])
                 random.shuffle(n_ind.task_allocation)  # shuffle task run seq
@@ -1792,6 +1942,44 @@ class evosch2:
         memory_usage = memory_info.rss / 1024**2  # in MB
         print(f"After cleaning memory usage: {memory_usage:.2f} MB")
 
+    def run_ga_for_node(self, node, population, num_runs_in_node, num_generations_node):
+        # boundary conditions check
+        if len(population) < 1 or len(population[0].task_allocation) < 2:
+            ## TODO add condition for single task
+            # logger.info(
+            #     f"No population, or only one task on this node. Skip"
+            # )
+            return (node, population[0].task_allocation)
+        
+        score = 0
+        new_score = 0
+        for gen_node in range(num_runs_in_node):
+            population = population[:num_generations_node]  # control nums
+            random.shuffle(population)
+            size = len(population)
+            for i in range(size // 2):
+                ind1 = population[i]
+                ind2 = population[size - i - 1]
+                if new_score == score:  # no change, add stimulation
+                    self.process_individual_mutate(population, ind1, ind2)
+                self.opt1(population, ind1)
+                self.opt1(population, ind2)
+                self.opt2(population, ind1)
+                self.opt2(population, ind2)
+                self.opt_gpu(population, ind1)
+                self.opt_gpu(population, ind2)
+            
+            self.sch_data.Task_time_predictor.estimate_ga_population(
+                population, self.sch_data.sch_task_list, all_node=True
+            )
+            scores = [self.fitness(ind, all_node=False) for ind in population]
+            population = [population[i] for i in np.argsort(scores)[::-1]]
+            score = new_score
+            new_score = population[0].score
+        
+        best_ind = max(population, key=lambda ind: ind.score)
+        return (node, best_ind.task_allocation)
+
     def run_ga(
         self,
         all_tasks:list[dict[str, int]],
@@ -1799,142 +1987,83 @@ class evosch2:
         num_runs_in_node: int = 20,
         num_generations_all: int = 5,
         num_generations_node: int = 20,
+        pool = None,
     )->list:
-        with self.run_lock:
-            start_time = time.time()
-            logger.info(f"Starting GA with available tasks: {all_tasks}")
-            logger.info(
-                f"on going task:{self.running_task_node}, resources:{self.resources}, node_resources:{self.node_resources}"
-            )
+        start_time = time.time()
+        logger.info(f"Starting GA with available tasks: {all_tasks}")
+        logger.info(
+            f"on going task:{self.running_task_node}, resources:{self.resources}, node_resources:{self.node_resources}"
+        )
 
-            # run no record task
-            ind = self.detect_no_his_task(all_tasks)
-            if len(ind.task_allocation) > 0:
-                return ind.task_allocation
+        # run no record task
+        ind = self.detect_no_his_task(all_tasks)
+        if len(ind.task_allocation) > 0:
+            return ind.task_allocation
 
-            self.population = self.generate_population_all(all_tasks=all_tasks, population_size=num_generations_all)
-
-            # train random forest model for predict running time
-            # self.hist_data.random_forest_train()
-            self.sch_data.Task_time_predictor.polynomial_train(self.sch_data.historical_task_data.historical_data)
-
-            pop_size = len(self.population)
-
-            # first we can estimate every task running time
-            # self.hist_data.estimate_batch(self.population, all_node=True)
-            self.sch_data.Task_time_predictor.estimate_ga_population(
-                self.population, self.sch_data.sch_task_list, all_node=True
-            )
-            scores = [self.fitness(ind, all_node=True) for ind in self.population]
-            self.population = [self.population[i] for i in np.argsort(scores)[::-1]]
-            
-            # only one task , submit directly
-            if self.at.get_total_nums(all_tasks) == 1:
-                logger.info(f"Only one task, submit directly")
-                self.best_ind = self.population[-1]  # predifined resources at last in list
-                best_allocation = []
-                for key in self.best_ind.task_allocation_node.keys(): # return a list
-                    best_allocation.extend(self.best_ind.task_allocation_node[key])
-                return best_allocation
-            
-            # logger.info(f"Generation 0: {population[0]}")
-            score = self.population[0].score
-            logger.info(f"initial score is {score}")
-            new_score = 0
-            for gen in range(num_runs): ## total epoch
-                # load balance on each node
-
-                # evo on each node， population size will influence the times for ga run 
-                for a_ind in self.population:
-                    self.load_balance(
-                        a_ind
-                    )  # for each individual on all node, do balance
-                    self.population_node = self.generate_population_in_node(
-                        a_ind, num_generations_node
-                    )  # generate ind on each node
-                    # logger.info(f"Generation_node, gen: {gen}: a_ind:{a_ind}")
-                    for node in self.node_resources.keys():
-                        # logger.info(f"Node {node} evolution")
-                        population = self.population_node[node]  # must shallow copy here
-                        # boundary conditions check
-                        if len(population) < 1 or len(population[0].task_allocation) < 2:
-                            # logger.info(
-                            #     f"No population, or only one task on this node. Skip"
-                            # )
-                            break
-                        for gen_node in range(num_runs_in_node):
-                            population = population[:num_generations_node]  # control nums
-                            # logger.info(f"show population{population}")
-                            random.shuffle(population)
-                            # with concurrent.futures.ThreadPoolExecutor() as executor:
-                            #     futures = []
-                            #     size = len(population)
-                            #     # logger.info(f"size:{size}")
-                            #     for i in range(size // 2):
-                            #         ind1 = population[i]
-                            #         ind2 = population[size - i - 1]
-                            #         if new_score == score:  # no change, add stimulation
-                            #             futures.append(executor.submit(safe_execute, self.process_individual_mutate, population, ind1, ind2))
-                            #         futures.append(executor.submit(safe_execute, self.opt1, population, ind1))
-                            #         futures.append(executor.submit(safe_execute, self.opt1, population, ind2))
-                            #         futures.append(executor.submit(safe_execute, self.opt2, population, ind1))
-                            #         futures.append(executor.submit(safe_execute, self.opt2, population, ind2))
-                            #     concurrent.futures.wait(futures)
-                            size = len(population)
-                            # logger.info(f"size:{size}")
-                            for i in range(size // 2):
-                                ind1 = population[i]
-                                ind2 = population[size - i - 1]
-                                if new_score == score:  # no change, add stimulation
-                                    self.process_individual_mutate(population, ind1, ind2)
-                                self.opt1(population, ind1)
-                                self.opt1(population, ind2)
-                                self.opt2(population, ind1)
-                                self.opt2(population, ind2)
-                                self.opt_gpu(population, ind1)
-                                self.opt_gpu(population, ind2)
-                            # self.hist_data.estimate_batch(
-                            #     population, all_node=False
-                            # )  # cal predict running time for each task
-                            self.sch_data.Task_time_predictor.estimate_ga_population(
-                                self.population, self.sch_data.sch_task_list, all_node=True
-                            )
-                            scores = [
-                                self.fitness(ind, all_node=False) for ind in population
-                            ]
-                            population = [population[i] for i in np.argsort(scores)[::-1]]
-                            score = new_score
-                            new_score = population[0].score
-                            # population = population[:50]
-                        # logger.info(
-                        #     f"Generation {gen}-{gen_node}: best ind on node{node} score:{population[0].score}"
-                        # )
-                        # best ind on node
-                        # logger.info(f"Generation_node {gen_node}: best ind on node{node}:{population[0]}")
-                        best_ind = max(population, key=lambda ind: ind.score)
-                        a_ind.task_allocation_node[node] = copy.deepcopy(
-                            best_ind.task_allocation
-                        )
-                        # cleanning
-                        # self.clean_population(population)
-
-                        # single node ind operation end
-                    # all node ind operation end
-                # global int operation here
-                scores = [self.fitness(ind, all_node=True) for ind in self.population]
-                logger.info(f"Generation {gen}: best ind score:{self.population[0].score}")
-
-            # best ind global
-            best_ind = max(self.population, key=lambda ind: ind.score)
-            logger.info(f"score of all ind:{scores}")
-            logger.info(f"Best ind:{best_ind}")
-            self.best_ind = best_ind
-            best_allocation = []
-            for key in best_ind.task_allocation_node.keys():
-                best_allocation.extend(best_ind.task_allocation_node[key])
-
-            logger.info("GA running time: %s seconds" % (time.time() - start_time))
+        self.population = self.generate_population_all(all_tasks=all_tasks, population_size=num_generations_all)
+        self.sch_data.Task_time_predictor.polynomial_train(self.sch_data.historical_task_data.historical_data)
+        self.sch_data.Task_time_predictor.estimate_ga_population(
+            self.population, self.sch_data.sch_task_list, all_node=True
+        )
+        scores = [self.fitness(ind, all_node=True) for ind in self.population]
+        self.population = [self.population[i] for i in np.argsort(scores)[::-1]]
         
+        # only one task , submit directly
+        if self.at.get_total_nums(all_tasks) == 1:
+            logger.info(f"Only one task, submit directly")
+            self.best_ind = self.population[-1]  # predifined resources at last in list
+            best_allocation = []
+            for key in self.best_ind.task_allocation_node.keys(): # return a list
+                best_allocation.extend(self.best_ind.task_allocation_node[key])
+            return best_allocation
+        
+        # logger.info(f"Generation 0: {population[0]}")
+        score = self.population[0].score
+        logger.info(f"initial score is {score}")
+        new_score = 0
+        for gen in range(num_runs): ## total epoch
+            # evo on each node， population size will influence the times for ga run 
+            for a_ind in self.population:
+                self.load_balance(
+                    a_ind
+                )  # for each individual on all node, do balance
+                self.population_node = self.generate_population_in_node(
+                    a_ind, num_generations_node
+                )  # generate ind on each node
+                # logger.info(f"Generation_node, gen: {gen}: a_ind:{a_ind}")
+                # for node in self.node_resources.keys():
+                #     # logger.info(f"Node {node} evolution")
+                #     population = self.population_node[node]  # must shallow copy here
+
+
+                    # # single node ind operation end
+                # with multiprocessing.Pool() as pool:
+                results = pool.starmap(
+                    self.run_ga_for_node,
+                    [
+                        (node, population, num_runs_in_node, num_generations_node)
+                        for node, population in self.population_node.items()
+                    ],
+                )
+                for node, task_allocation in results:
+                    a_ind.task_allocation_node[node] = task_allocation
+                    
+                # all node ind operation end
+            # global ind operation here
+            scores = [self.fitness(ind, all_node=True) for ind in self.population]
+            logger.info(f"Generation {gen}: best ind score:{self.population[0].score}")
+
+        # best ind global
+        best_ind = max(self.population, key=lambda ind: ind.score)
+        logger.info(f"score of all ind:{scores}")
+        logger.info(f"Best ind:{best_ind}")
+        self.best_ind = best_ind
+        best_allocation = []
+        for key in best_ind.task_allocation_node.keys():
+            best_allocation.extend(best_ind.task_allocation_node[key])
+
+        logger.info("GA running time: %s seconds" % (time.time() - start_time))
+    
         return best_allocation
 
 

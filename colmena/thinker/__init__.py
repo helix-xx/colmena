@@ -104,10 +104,12 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
             # timer = threading.Timer(3, lambda: timeout_callback(thinker)) 
             
             # test dynamic task
-            # with thinker.queues.evosch_lock:
+            # with thinker.queues.queue_sch_lock:
             # thinker.logger.info('agent {} acquire resources'.format(task_type))
-            with thinker.queues.evosch_lock:
-                permit, info = thinker.queues.smart_sch.acquire_resources(task_type)
+            thinker.queues.enough_resources_flag.wait()
+            if thinker.queues.smart_sch is not None:
+                with thinker.queues.queue_sch_lock:
+                    permit, info = thinker.queues.smart_sch.acquire_resources(task_type)
             # if permit == -1:
             #     time.sleep(10)
             #     continue

@@ -75,7 +75,9 @@ class ColmenaQueues:
         """
 
         # Store the list of topics and other simple options
-        self.enable_evo = enable_evo
+        self.enable_fcfs = True
+        self.enable_smart_sch = False
+        logger.info(f'using stragegy: fcfs {self.enable_fcfs}, evo {self.enable_smart_sch}')
         self.topics = set(topics)
         self.methods = set(methods)
         self.topics.add('default')
@@ -95,19 +97,17 @@ class ColmenaQueues:
         self._available_tasks = evo_sch.available_task(self.methods)
         self._available_task_capacity = available_task_capacity
 
-        self.evosch_lock = threading.Lock()
+        self.queue_sch_lock = threading.Lock()
         # self.evosch: evo_sch.evosch2 = evo_sch.evosch2(
         #     resources=available_resources,
         #     at=self._available_tasks,
         #     hist_data=historical_data,
         # )
         self.best_allocation = None  # best allocation
-
-        # TODO tmp test, acquire task while resources idle
-        self.prepared_task = defaultdict(list)
-
-        # Result list temp for result object, can be quick search by task_id
-        # self.result_list = {}  # can be quick search by id
+        
+        # enough resources flag, trigger scheduler to submit task
+        self.enough_resources_flag = Event()
+        self.enough_resources_flag.set()
 
         # timer for trigger evo_sch
         timer = None
@@ -118,16 +118,16 @@ class ColmenaQueues:
             if timer:
                 timer.cancel()
             timeout = 3
-            timer = threading.Timer(timeout, self.trigger_evo_sch)
+            timer = threading.Timer(timeout, self.trigger_sch)
             timer.start()
 
         self.timer_trigger = reset_timer
 
         # tmp test
-        self.smart_sch: evo_sch.SmartScheduler = evo_sch.SmartScheduler(
-            methods, available_task_capacity, available_resources, sch_config=None
-        )
-        # self.evosch.sch_data = self.sch_data
+        if self.enable_smart_sch or self.enable_fcfs:
+            self.smart_sch: evo_sch.SmartScheduler = evo_sch.SmartScheduler(
+                methods, available_task_capacity, available_resources, sch_config=None
+            )
 
         # Create {topic: proxystore_name} mapping
         self.proxystore_name = {t: None for t in self.topics}
@@ -243,8 +243,8 @@ class ColmenaQueues:
             f'Client received a {result_obj.method} result with topic {topic}, consume resource is {result_obj.inputs[1]}'
         )
 
-        if self.enable_evo:
-            with self.evosch_lock:
+        if self.enable_smart_sch:
+            with self.queue_sch_lock:
                 node = getattr(result_obj.resources, 'node')
                 gpu_value = result_obj.inputs[1]['gpu']
                 self.smart_sch.evo_sch.resources[node]['cpu'] += result_obj.inputs[1][
@@ -260,24 +260,9 @@ class ColmenaQueues:
                         break
 
                 if result_obj.success:
-                    # self.smart_sch.evo_sch.hist_data.complete_task_seq.append(
-                    #     {
-                    #         "method": result_obj.method,
-                    #         "topic": topic,
-                    #         "task_id": result_obj.task_id,
-                    #         "time": time.time(),
-                    #         "type": "complete",
-                    #     }
-                    # )
-                    # self.evosch.hist_data.get_features_from_result_object(result_obj)
                     self.smart_sch.sch_data.historical_task_data.get_features_from_result_object(
                         result_obj
                     )
-                # else:
-                #     for item in self.smart_sch.evo_sch.hist_data.submit_task_seq:
-                #         if item['task_id'] == result_obj.task_id:
-                #             self.smart_sch.evo_sch.hist_data.submit_task_seq.remove(item)
-                #             break
 
                 logger.info(
                     f'Client received a {result_obj.method} result with topic {topic}, restore resources: remaining resources on node {node} are {self.smart_sch.evo_sch.resources[node]}'
@@ -289,6 +274,13 @@ class ColmenaQueues:
                     self._add_task_flag.set()
                     if self.smart_sch.sch_data.avail_task.get_total_nums() > 0:
                         self.timer_trigger()
+                        
+        if self.enable_fcfs:
+            with self.queue_sch_lock:
+                self.smart_sch.fcfs_sch.recover_resources(result_obj)
+                self.enough_resources_flag.set()
+                # 恢复了资源后，尝试通过FCFS提交任务
+                self.fcfs_submit_task()
 
         return result_obj
 
@@ -365,27 +357,7 @@ class ColmenaQueues:
         )
         result.time_serialize_inputs, proxies = result.serialize()
 
-        if self.enable_evo:
-            # TODO tmp test for acquire task while resources idle
-            # check if we tmp save the task in dict
-            if (
-                self.smart_sch.evo_sch.prepared_task[method] is None
-                or len(self.prepared_task[method]) < 4
-            ):
-                result_p = Result(
-                    (input_args, input_kwargs),
-                    method=method,
-                    topic=topic,
-                    keep_inputs=_keep_inputs,
-                    serialization_method=self.serialization_method,
-                    task_info=task_info,
-                    # Takes either the user specified or a default
-                    resources=resources or ResourceRequirements(),
-                    **ps_kwargs,
-                )
-                result_p.time_serialize_inputs, proxies = result_p.serialize()
-                self.smart_sch.evo_sch.prepared_task[method].append(result_p)
-
+        if self.enable_smart_sch:
             # add to available task list, under this lock agent cant submit task
             with self._add_task_lock:
                 self.smart_sch.sch_data.avail_task.add_task_id(
@@ -408,6 +380,12 @@ class ColmenaQueues:
                 #     logger.info(f'Client reach the capacity.')
                 #     self._add_task_flag.clear() # TODO for now we disable it to run the test
             self.timer_trigger()
+        elif self.enable_fcfs:
+            with self.queue_sch_lock:
+                # 每一次触发任务提交时，将任务添加到任务队列中，并尝试通过FCFS提交任务
+                self.smart_sch.sch_data.add_result_obj(result)
+                self.smart_sch.fcfs_sch.task_queue.append(result.task_id)
+                self.fcfs_submit_task()
         else:
             # Push the serialized value to the task server
             # move this after the task is added to the available task list and decide by scheduler
@@ -422,6 +400,37 @@ class ColmenaQueues:
             self._all_complete.clear()
         return result.task_id
 
+    def fcfs_submit_task(self):
+        # 判断是否有任务
+        if len(self.smart_sch.fcfs_sch.task_queue) == 0:
+            return
+        while len(self.smart_sch.fcfs_sch.task_queue) > 0:
+            # 获取任务
+            task_id = self.smart_sch.fcfs_sch.task_queue[0]
+            result = self.smart_sch.sch_data.get_result_obj(task_id)
+            
+            
+            # gpu_value = result.inputs[1]['gpu']
+            # cpu_value = result.inputs[1]['cpu']
+            gpu_value = result.resources.gpu
+            cpu_value = result.resources.cpu
+            required_resources = {'cpu': cpu_value, 'gpu': gpu_value}
+            node = self.smart_sch.fcfs_sch.find_available_node(required_resources)
+            if node == None:
+                logger.info(f'No available resources on all node for task {task_id}')
+                self.enough_resources_flag.clear()
+                return
+            else:
+                logger.info(f"submit task {task_id} to queue on node {node}, consume resources are {required_resources}")
+                setattr(result.resources, 'node', node)
+                self.smart_sch.fcfs_sch.allocate_resources(result)
+                self.smart_sch.fcfs_sch.task_queue.pop(0)
+                # self.smart_sch.fcfs_sch.running_task_node[node].append(task_id)
+                self.smart_sch.sch_data.pop_result_obj(task_id)
+
+                self._send_request(result.json(exclude_none=True), result.topic)
+                logger.info(f'Resources: result.resources is: {result.resources}')
+    
     def trigger_submit_task(self, best_allocation: list):
         logger.info(
             f'Client trigger submit task, available task length is {len(best_allocation)}'
@@ -489,7 +498,7 @@ class ColmenaQueues:
                     )
                     self.smart_sch.evo_sch.running_task_node[node].append(predict_task)
 
-                    result = self.smart_sch.sch_data.pop_result_obj(task)
+                    result = self.smart_sch.sch_data.pop_result_obj(task['task_id'])
                     result.inputs[1]['cpu'] = cpu_value
                     gpu_value, self.smart_sch.evo_sch.resources[node]['gpu_devices'] = (
                         self.smart_sch.evo_sch.resources[node]['gpu_devices'][
@@ -525,16 +534,16 @@ class ColmenaQueues:
         if self.smart_sch.evo_sch.at.get_total_nums() > 0:
             self.timer_trigger()
 
-    def trigger_evo_sch(self):
+    def trigger_sch(self):
         """Conditions that trigger scheduling and submission of tasks
 
         Args:
             result (Result): _description_
             topic (str, optional): _description_. Defaults to 'default'.
         """
-        if self.evosch_lock.acquire(blocking=False):
+        if self.queue_sch_lock.acquire(blocking=False):
             # only one thread could trigger this
-            logger.info("evosch_lock acquire")
+            logger.info("queue_sch_lock acquire")
             # run_flag = False
             try:
                 if self._available_tasks.get_total_nums() == 0:
@@ -553,14 +562,6 @@ class ColmenaQueues:
                         f'Client trigger evo_sch because task pending on all nodes, available task is {self._available_tasks.task_ids}, pending task is {self.best_allocation}'
                     )
                     return
-                # TODO think correct logic
-                # add condition here to trigger evo_sch
-                # condition 1: send_inputs, then timetrigger timeout
-                # condition 2: the task capacity is full? need re consider
-                #
-                # while workflow running, new task come and re sort the queue
-                # a task completed, reset timetrigger
-                #
 
                 # check any node have no pending task, go into runga
                 if self._add_task_flag.is_set() is False:
@@ -577,10 +578,7 @@ class ColmenaQueues:
                     #     pass
                     # else:
                     #     logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
-                    self.best_allocation = self.smart_sch.evo_sch.run_ga(
-                        self.smart_sch.sch_data.avail_task.get_all()
-                    )
-                    self.smart_sch.best_result = self.smart_sch.evo_sch.best_ind
+                    self.best_allocation = self.smart_sch.run_sch()
                     self.trigger_submit_task(self.best_allocation)
 
                 if self._add_task_flag.is_set() is True:
@@ -591,20 +589,17 @@ class ColmenaQueues:
                     logger.info(
                         f'result list length is {self.smart_sch.sch_data.get_result_list_len()}'
                     )
-                    self.best_allocation = self.smart_sch.evo_sch.run_ga(
-                        self.smart_sch.sch_data.avail_task.get_all()
-                    )
+                    self.best_allocation = self.smart_sch.run_sch()
                     # except:
                     #     logger.info(f'sch_task list {self.smart_sch.sch_data.sch_task_list}')
                     #     logger.info(f'result list {self.smart_sch.sch_data.result_list}')
                     #     logger.info(f'available task list {self.smart_sch.sch_data.avail_task.task_ids}')
-                    self.smart_sch.best_result = self.smart_sch.evo_sch.best_ind
                     self.trigger_submit_task(self.best_allocation)
             finally:
-                self.evosch_lock.release()
-                logger.info("evosch_lock release")
+                self.queue_sch_lock.release()
+                logger.info("queue_sch_lock release")
         else:
-            logger.info("evosch_lock acquire fail, evosch is running")
+            logger.info("queue_sch_lock acquire fail, evosch is running")
             return
 
     def wait_until_done(self, timeout: Optional[float] = None):
