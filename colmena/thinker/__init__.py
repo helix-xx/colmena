@@ -110,12 +110,6 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
             if thinker.queues.smart_sch is not None:
                 with thinker.queues.queue_sch_lock:
                     permit, info = thinker.queues.smart_sch.acquire_resources(task_type)
-            # if permit == -1:
-            #     time.sleep(10)
-            #     continue
-            # close dynamic
-            # permit = 0
-            # info = {}
             # thinker.logger.info(f'Agent pilot: topic {task_type} permit {permit} info {info}')
             # thinker.logger.info(f'Acquired {n_slots} execution slots of type {task_type}')
             start_time = perf_counter()

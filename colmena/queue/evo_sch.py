@@ -34,8 +34,10 @@ from colmena.models import Result
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge, ElasticNet
 from sklearn.pipeline import Pipeline
+
+import datetime
 
 relative_path = "~/project/colmena/multisite_"
 absolute_path = os.path.expanduser(relative_path)
@@ -108,7 +110,8 @@ class SmartScheduler:
         self.record_resources = copy.deepcopy(available_resources)
         self.util_level = 0.1
         self.exceed_area_limit = 1.1
-        self.exceed_completion_time_limit = 1.1
+        self.exceed_completion_time_limit = 1
+        
         
         self.best_result = None
         
@@ -247,7 +250,122 @@ class SmartScheduler:
             bese_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
             self.best_result = self.evo_sch.best_ind
             return bese_allocation
+        
+    def run_mrsa_scheduler(self):
+        """使用MRSA替代GA进行调度"""
+        # 准备输入文件
+        folder_name = prepare_mrsa_input(self.sch_data)
+        folder_name = "fitune_surrogate"
+        
+        # 获取资源配置
+        total_cpu = sum(node['cpu'] for node in self.available_resources.values())
+        total_gpu = sum(node['gpu'] for node in self.available_resources.values())
+        
+        # 调用MRSA调度器
+        cmd = f"python3 /home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/alphaMaster.py {folder_name} 2 {total_cpu} {total_gpu} powMax {folder_name}"
+        print(cmd)
+        os.system(cmd)
+        
+        # 读取调度结果
+        # TODO: 解析MRSA的输出格式，转换为当前调度器的任务分配格式
+        
+        # return task_allocation
 
+## mrsa 调度
+def convert_polynomial_to_powermax(task_list, polynomial_models, output_folder="fitune_surrogate", dimensions=2):
+    """将多项式模型预测的任务转换为power-max格式的任务描述
+    
+    Args:
+        task_list: 当前需要调度的任务列表
+        polynomial_models: 训练好的多项式模型字典 {method: model}
+        output_folder: 输出文件夹名称
+        dimensions: 资源维度数(CPU+GPU)
+    """
+    # 确保输出目录存在
+    os.makedirs(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/tasks_parameters/{output_folder}", exist_ok=True)
+    
+    def estimate_powermax_params(task, model):
+        """估计单个任务的power-max模型参数"""
+        # 采样不同资源配置下的运行时间
+        cpu_points = np.linspace(1, 16, 8)  # 根据实际情况调整范围
+        gpu_points = np.linspace(0, 4, 5)   # 根据实际情况调整范围
+        
+        times = []
+        configs = []
+        
+        for cpu in cpu_points:
+            for gpu in gpu_points:
+                X = pd.DataFrame([{
+                    'message_sizes.inputs': task.get('message_sizes.inputs', 1),
+                    'resources.cpu': cpu,
+                    'resources.gpu': gpu
+                }])
+                predicted_time = model.predict(X)[0]
+                if predicted_time < 1:
+                    predicted_time = 1  # 防止出现负数或零
+                times.append(predicted_time)
+                configs.append([cpu, gpu])
+        
+        # 转换为power-max模型参数
+        # 取对数进行线性拟合
+        X = np.array([[np.log(1/c), np.log(1/g) if g > 0 else 0] for c, g in configs])
+        y = np.log(times)
+        
+        reg = LinearRegression()
+        reg.fit(X, y)
+        
+        # 提取参数
+        W = np.exp(reg.intercept_)
+        alpha_cpu = reg.coef_[0]
+        alpha_gpu = reg.coef_[1]
+        
+        # 标准化alpha值到(0,1]范围
+        alpha_cpu = min(max(alpha_cpu, 0.1), 1.0)
+        alpha_gpu = min(max(alpha_gpu, 0.1), 1.0)
+        
+        return {
+            'W': W,
+            's_1': 1.0,  # CPU权重
+            's_2': 0.0,  # GPU权重
+            'a_1': alpha_cpu,
+            'a_2': alpha_gpu
+        }
+    
+    # 为每个任务生成参数并写入文件
+    with open(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/tasks_parameters/{output_folder}/sample0.txt", 'w') as f:
+        for task in task_list:
+            method = task['method']
+            model = polynomial_models[method]
+            
+            params = estimate_powermax_params(task, model)
+            
+            # 格式: name s0 s1 s2 a1 a2
+            line = f"{task['task_id']} {0.0} {params['s_1']} {params['s_2']} {params['a_1']} {params['a_2']}\n"
+            f.write(line)
+            
+def prepare_mrsa_input(sch_data, output_folder="fitune_surrogate"):
+    """准备MRSA调度器输入"""
+    # 获取当前需要调度的任务
+    tasks = []
+    for task_id, task in sch_data.sch_task_list.items():
+        tasks.append(task)
+    
+    # 转换为power-max格式
+    convert_polynomial_to_powermax(
+        task_list=tasks,
+        polynomial_models=sch_data.Task_time_predictor.polynomial_models,
+        output_folder=output_folder
+    )
+    
+    # 创建空的依赖关系文件夹和文件(因为不考虑依赖关系)
+    os.makedirs(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/precedence_constraints/{output_folder}", exist_ok=True)
+    with open(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/precedence_constraints/{output_folder}/sample0.txt", 'w') as f:
+        pass
+    
+    # 创建分配结果文件夹
+    os.makedirs(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/allocation/{output_folder}", exist_ok=True)
+    
+    return output_folder
 
 # evo stargety here
 @dataclass
@@ -504,6 +622,7 @@ class HistoricalData:
                 #     break
             feature_values[feature] = value
         self.add_data(feature_values)
+        return feature_values
         
     def get_sch_task_from_result_object(self, result: Result):
         feature_values = {}
@@ -534,6 +653,10 @@ class HistoricalData:
                         value = json_line
                         for key in feature.split('.'):
                             value = value.get(key)
+                        if feature == 'resources.gpu':
+                            value = (
+                                len(value) if isinstance(value, list) else value
+                            )
                             # if value is None:
                             #     break
                         feature_values[feature] = value
@@ -573,10 +696,10 @@ class TaskTimePredictor:
         self.random_forest_models = {}
         self.polynomial_models = {}
         for method in methods:
-        #     self.random_forest_models[method] = RandomForestRegressor(
-        #         n_estimators=100, random_state=42, n_jobs=-1
-        #     )
-        
+            #     self.random_forest_models[method] = RandomForestRegressor(
+            #         n_estimators=100, random_state=42, n_jobs=-1
+            #     )
+
             self.polynomial_models[method] = None
 
     # unify train function?
@@ -596,12 +719,25 @@ class TaskTimePredictor:
             y = df['time_running']
 
             # polunomialfeatures or np.polyfit
-            poly_model = Pipeline(
-                [
-                    ('poly_features', PolynomialFeatures(degree=3)),
-                    ('linear_model', LinearRegression()),
-                ]
-            )
+            # original bad model
+            # poly_model = Pipeline(
+            #     [
+            #         ('poly_features', PolynomialFeatures(degree=3)),
+            #         ('linear_model', LinearRegression()),
+            #     ]
+            # )
+            poly_model = Pipeline([
+                ('poly_features', PolynomialFeatures(
+                    degree=5,                    # 降低多项式次数，减少过拟合风险
+                    include_bias=False,          # 不包含偏置项，因为LinearRegression已经有截距
+                    # interaction_only=True        # 只包含交互项，不包含高次项
+                )),
+                ('linear_model', LinearRegression(
+                    fit_intercept=True,          # 包含截距项
+                    # positive=True,               # 强制系数为正，因为时间不能为负
+                    n_jobs=-1                    # 并行计算
+                ))
+            ])
             poly_model.fit(x, y)
             self.polynomial_models[method] = poly_model
 
@@ -630,7 +766,6 @@ class TaskTimePredictor:
                 value = task['resources'][key]
             task_features[feature] = value
         return task_features
-        
 
     def estimate_ga_population(self, population, sch_task_list, all_node=False):
 
@@ -1030,7 +1165,7 @@ class FCFSScheduler:
                 logger.info(f"Allocated task {task_name}:{task_id} to node {node}")
                 
         return task_allocation
-    
+
 class Back_Filing_Scheduler:
     pass
 
@@ -1077,7 +1212,23 @@ class evosch2:
         )
         self.best_ind: individual = None
 
-        
+        # 添加日志相关的初始化
+        self.timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_dir = "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/job_out"
+        self.log_path = os.path.join(self.log_dir, f'run_ga_{self.timestamp}.log')
+
+        # 确保日志目录存在
+        os.makedirs(self.log_dir, exist_ok=True)
+
+        # 初始化日志文件
+        with open(self.log_path, 'w') as f:
+            f.write(f"GA Optimization Started at {self.timestamp}\n")
+            f.write("=" * 80 + "\n")
+
+    def write_log(self, message):
+        with open(self.log_path, 'a') as f:
+            f.write(f"{datetime.datetime.now().strftime('%H:%M:%S')} - {message}\n")
+
     # allocate and recover resources, with threadlock
     def allocate_resources(self, result_obj:Result):
         with self.run_lock:
@@ -1086,7 +1237,7 @@ class evosch2:
             self.resources['node']['cpu'] -= cpu_value
             self.resources['node']['gpu'] -= gpu_value
             self.at.remove_task_id(task_name=result_obj['name'], task_id=result_obj['task_id'])
-    
+
     def recover_resources(self, result_obj:Result):
         with self.run_lock:
             node = getattr(result_obj.resources, 'node')
@@ -1314,19 +1465,19 @@ class evosch2:
                     - task['resources']['cpu'] * task['total_runtime']
                 )
                 total_cpu_area_max = completion_time[max_node] * self.resources_evo[max_node]['cpu']
-                
+
                 temp_gpu_time_max = (
                     total_gpu_time[max_node]
                     - task['resources']['gpu'] * task['total_runtime']
                 )
                 total_gpu_area_max = completion_time[max_node] * self.resources_evo[max_node]['gpu']
-                
+
                 temp_cpu_time_min = (
                     total_cpu_time[min_node]
                     + task['resources']['cpu'] * task['total_runtime']
                 )
                 total_cpu_area_min = completion_time[min_node] * self.resources_evo[min_node]['cpu']
-                
+
                 temp_gpu_time_min = (
                     total_gpu_time[min_node]
                     + task['resources']['gpu'] * task['total_runtime']
@@ -1334,7 +1485,7 @@ class evosch2:
                 total_gpu_area_min = completion_time[min_node] * self.resources_evo[min_node]['gpu']
 
                 # cpu 和 gpu 时间差的绝对值， 存疑； 应该修改为最能减少completion time； 是否应该再用一次GA算法？
-                # ga on node 
+                # ga on node
                 # calculate completion time, or extra metrics
                 # temp_diff_max = abs(temp_cpu_time_max - temp_gpu_time_max)
                 # temp_diff_min = abs(temp_cpu_time_min - temp_gpu_time_min)
@@ -1342,7 +1493,6 @@ class evosch2:
                 temp_max_diff = abs(total_cpu_area_max - used_cpu_time_max) + abs(total_gpu_area_max - temp_gpu_time_max)
                 temp_min_diff = abs(total_cpu_area_min - temp_cpu_time_min) + abs(total_gpu_area_min - temp_gpu_time_min)
                 combined_diff = temp_max_diff + temp_min_diff
-                
 
                 if combined_diff < best_diff:
                     best_diff = combined_diff
@@ -1382,12 +1532,15 @@ class evosch2:
                 diff_cur = max(completion_time.values()) - min(completion_time.values())
             else:
                 break
-            
+
             if max_now > max_pre:
                 # if the max completion time increase, break
                 break
             else:
                 max_pre = max_now
+
+    def load_balance_by_area():
+        pass
 
     def calculate_completion_time_record_with_running_task(
         self, resources, running_task: list, task_allocation
@@ -1646,7 +1799,7 @@ class evosch2:
         for name, ids in all_tasks.items():
             if len(ids) == 0:
                 continue
-            
+
             predefine_cpu = self.sch_data.sch_task_list[ids[0]]['resources.cpu']
             predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
 
@@ -1822,7 +1975,7 @@ class evosch2:
         ]
         tasks = sorted(tasks, key=lambda x: x[1]['total_runtime'], reverse=True)
         # 对最长运行时间的任务增加 GPU 资源
-        for i in range(len(tasks) // 3):  # 处理前1/3的任务
+        for i in range((len(tasks) // 3)):  # 处理前1/3的任务
             index = self.list_dict_index(ind.task_allocation, tasks[i][1])
             if index:
                 new_alloc = (
@@ -1834,7 +1987,7 @@ class evosch2:
                     ind.task_allocation[index]['resources']['gpu'] = new_alloc
 
         # 对最短运行时间的任务减少 GPU 资源
-        for i in range(len(tasks) // 3):  # 处理后1/3的任务
+        for i in range((len(tasks) // 3)):  # 处理后1/3的任务
             index = self.list_dict_index(ind.task_allocation, tasks[-i][1])
             if index:
                 new_alloc = ind.task_allocation[index]['resources']['gpu'] - 1
@@ -1846,40 +1999,52 @@ class evosch2:
 
     def opt1(self, population: list, ind: individual):
         ind = ind.copy()
-        ## add resources for longest task
-        # logger.info(f"opt1: {ind.task_allocation}")
-        # logger.info(f"opt1: {ind.predict_run_seq}")
         tasks = sorted(
             ind.predict_run_seq.items(),
             key=lambda x: x[1]['total_runtime'],
             reverse=True,
-        )  # sorted dict return desending list(tuple)
-        for i in range(len(tasks) // 3):  # long 1/3 percent
-            index = self.list_dict_index(ind.task_allocation, tasks[i][1])
-            # task may in running, so we need to check if it is in the task allocation
-            if index:
-                new_alloc = (
-                    random.choice([1, 2, 3, 4, 5])
-                    + ind.task_allocation[index]['resources']['cpu']
-                )
-                if (
-                    new_alloc
-                    <= max(self.node_resources.values(), key=lambda x: x['cpu'])['cpu']
-                    // 2
-                ):  # only allow at constrait resources
-                    ind.task_allocation[index]['resources']['cpu'] = new_alloc
+        )
 
-            ## remove resources for shortest task
-            # task = min(ind.predict_run_seq, key=lambda x:x['total_runtime'])
-            index = self.list_dict_index(
-                ind.task_allocation, tasks[-i][1]
-            )  # short 1/3 percent
-            # task may in running, so we need to check if it is in the task allocation
-            if index:
-                # for caution, we jsut minus 1
-                new_alloc = ind.task_allocation[index]['resources']['cpu'] - 1
-                if new_alloc >= 1:
-                    ind.task_allocation[index]['resources']['cpu'] = new_alloc
+        # 随机选择是增加还是减少资源
+        if random.random() < 0.5:  # 50%概率增加资源
+            # 对运行时间最长的任务增加资源
+            for i in range((len(tasks) // 3)):
+                index = self.list_dict_index(ind.task_allocation, tasks[i][1])
+                if index:
+                    current_cpu = ind.task_allocation[index]['resources']['cpu']
+                    node = ind.task_allocation[index]['resources']['node']
+                    max_cpu = self.node_resources[node]['cpu']
+
+                    # 更激进的资源增加策略
+                    if current_cpu < 4:
+                        increment = random.choice([2, 3, 4])
+                    elif current_cpu < 8:
+                        increment = random.choice([4, 6, 8])
+                    else:
+                        increment = random.choice([6, 8, 10])
+
+                    new_alloc = current_cpu + increment
+                    if new_alloc <= max_cpu:  # 使用节点实际的CPU上限
+                        ind.task_allocation[index]['resources']['cpu'] = new_alloc
+
+        else:  
+            # 对运行时间最短的任务减少资源
+            for i in range((len(tasks) // 3)):
+                index = self.list_dict_index(ind.task_allocation, tasks[-(i+1)][1])
+                if index:
+                    current_cpu = ind.task_allocation[index]['resources']['cpu']
+
+                    # 更谨慎的资源减少策略
+                    if current_cpu > 8:
+                        decrement = random.choice([4, 6])
+                    elif current_cpu > 4:
+                        decrement = random.choice([2, 3])
+                    else:
+                        decrement = 1
+
+                    new_alloc = current_cpu - decrement
+                    if new_alloc >= 1:  # 确保至少保留1个CPU
+                        ind.task_allocation[index]['resources']['cpu'] = new_alloc
 
         population.append(ind)
 
@@ -1943,32 +2108,36 @@ class evosch2:
         print(f"After cleaning memory usage: {memory_usage:.2f} MB")
 
     def run_ga_for_node(self, node, population, num_runs_in_node, num_generations_node):
-        # boundary conditions check
+        self.write_log(f"\nNode {node} GA start")
+        self.write_log(f"Initial allocation: {population[0].task_allocation}")
+
+        # 检查边界条件
         if len(population) < 1 or len(population[0].task_allocation) < 2:
-            ## TODO add condition for single task
-            # logger.info(
-            #     f"No population, or only one task on this node. Skip"
-            # )
+            self.write_log(f"Node {node}: No population, or only one task. Skipping...")
             return (node, population[0].task_allocation)
-        
+
         score = 0
         new_score = 0
+
         for gen_node in range(num_runs_in_node):
-            population = population[:num_generations_node]  # control nums
+            population = population[:num_generations_node]
             random.shuffle(population)
             size = len(population)
+
             for i in range(size // 2):
                 ind1 = population[i]
                 ind2 = population[size - i - 1]
-                if new_score == score:  # no change, add stimulation
+
+                if new_score == score:
                     self.process_individual_mutate(population, ind1, ind2)
+
                 self.opt1(population, ind1)
                 self.opt1(population, ind2)
                 self.opt2(population, ind1)
                 self.opt2(population, ind2)
                 self.opt_gpu(population, ind1)
                 self.opt_gpu(population, ind2)
-            
+
             self.sch_data.Task_time_predictor.estimate_ga_population(
                 population, self.sch_data.sch_task_list, all_node=True
             )
@@ -1976,24 +2145,38 @@ class evosch2:
             population = [population[i] for i in np.argsort(scores)[::-1]]
             score = new_score
             new_score = population[0].score
-        
+
+            # 记录每一代的关键信息
+            best_ind = population[0]
+            self.write_log(
+                f"Node {node} Generation {gen_node + 1}: "
+                f"Score = {new_score:.2f}, "
+                f"Best CPU alloc = {[task['resources']['cpu'] for task in best_ind.task_allocation]}"
+            )
+
         best_ind = max(population, key=lambda ind: ind.score)
+        self.write_log(
+            f"Node {node} Final Result:\n"
+            f"Best Score = {best_ind.score:.2f}\n"
+            f"Final Allocation = {best_ind.task_allocation}\n"
+            f"{'-' * 80}"
+        )
+
         return (node, best_ind.task_allocation)
 
     def run_ga(
         self,
         all_tasks:list[dict[str, int]],
         num_runs: int = 10,
-        num_runs_in_node: int = 20,
-        num_generations_all: int = 5,
-        num_generations_node: int = 20,
+        num_runs_in_node: int = 50,
+        num_generations_all: int = 1,
+        num_generations_node: int = 50,
         pool = None,
     )->list:
         start_time = time.time()
-        logger.info(f"Starting GA with available tasks: {all_tasks}")
-        logger.info(
-            f"on going task:{self.running_task_node}, resources:{self.resources}, node_resources:{self.node_resources}"
-        )
+        self.write_log(f"\nStarting GA with {len(all_tasks)} tasks")
+        self.write_log(f"Running tasks: {self.running_task_node}")
+        self.write_log(f"Available resources: {self.node_resources}")
 
         # run no record task
         ind = self.detect_no_his_task(all_tasks)
@@ -2001,13 +2184,14 @@ class evosch2:
             return ind.task_allocation
 
         self.population = self.generate_population_all(all_tasks=all_tasks, population_size=num_generations_all)
-        self.sch_data.Task_time_predictor.polynomial_train(self.sch_data.historical_task_data.historical_data)
+        ## 增量更新
+        # self.sch_data.Task_time_predictor.polynomial_train(self.sch_data.historical_task_data.historical_data)
         self.sch_data.Task_time_predictor.estimate_ga_population(
             self.population, self.sch_data.sch_task_list, all_node=True
         )
         scores = [self.fitness(ind, all_node=True) for ind in self.population]
         self.population = [self.population[i] for i in np.argsort(scores)[::-1]]
-        
+
         # only one task , submit directly
         if self.at.get_total_nums(all_tasks) == 1:
             logger.info(f"Only one task, submit directly")
@@ -2016,120 +2200,59 @@ class evosch2:
             for key in self.best_ind.task_allocation_node.keys(): # return a list
                 best_allocation.extend(self.best_ind.task_allocation_node[key])
             return best_allocation
-        
+
         # logger.info(f"Generation 0: {population[0]}")
         score = self.population[0].score
         logger.info(f"initial score is {score}")
         new_score = 0
-        for gen in range(num_runs): ## total epoch
-            # evo on each node， population size will influence the times for ga run 
-            for a_ind in self.population:
-                self.load_balance(
-                    a_ind
-                )  # for each individual on all node, do balance
-                self.population_node = self.generate_population_in_node(
-                    a_ind, num_generations_node
-                )  # generate ind on each node
-                # logger.info(f"Generation_node, gen: {gen}: a_ind:{a_ind}")
-                # for node in self.node_resources.keys():
-                #     # logger.info(f"Node {node} evolution")
-                #     population = self.population_node[node]  # must shallow copy here
+        # for gen in range(num_runs): ## total epoch
+        #     # evo on each node， population size will influence the times for ga run
+        for gen, a_ind in enumerate(self.population):
+            self.write_log(f"\nGlobal Generation {gen + 1}")
+            self.write_log(f"Before load balance: {a_ind.task_allocation_node}")
+            self.load_balance(a_ind)
+            self.write_log(f"After load balance: {a_ind.task_allocation_node}")
+            
+            self.population_node = self.generate_population_in_node(
+                a_ind, num_generations_node
+            )  # generate ind on each node
+            
+            # logger.info(f"Generation_node, gen: {gen}: a_ind:{a_ind}")
+            # for node in self.node_resources.keys():
+            #     # logger.info(f"Node {node} evolution")
+            #     population = self.population_node[node]  # must shallow copy here
+            # # single node ind operation end
+            
+            # with multiprocessing.Pool() as pool:
+            results = pool.starmap(
+                self.run_ga_for_node,
+                [
+                    (node, population, num_runs_in_node, num_generations_node)
+                    for node, population in self.population_node.items()
+                ],
+            )
+            for node, task_allocation in results:
+                a_ind.task_allocation_node[node] = task_allocation
+                self.write_log(f"Node {node} final allocation: {task_allocation}")
 
-
-                    # # single node ind operation end
-                # with multiprocessing.Pool() as pool:
-                results = pool.starmap(
-                    self.run_ga_for_node,
-                    [
-                        (node, population, num_runs_in_node, num_generations_node)
-                        for node, population in self.population_node.items()
-                    ],
-                )
-                for node, task_allocation in results:
-                    a_ind.task_allocation_node[node] = task_allocation
-                    
-                # all node ind operation end
-            # global ind operation here
-            scores = [self.fitness(ind, all_node=True) for ind in self.population]
-            logger.info(f"Generation {gen}: best ind score:{self.population[0].score}")
+            # all node ind operation end
+        # global ind operation here
+        scores = [self.fitness(ind, all_node=True) for ind in self.population]
+        # logger.info(f"Generation {gen}: best ind score:{self.population[0].score}")
 
         # best ind global
         best_ind = max(self.population, key=lambda ind: ind.score)
-        logger.info(f"score of all ind:{scores}")
-        logger.info(f"Best ind:{best_ind}")
         self.best_ind = best_ind
+        
+        self.write_log("\nFinal Results:")
+        self.write_log(f"scores of all individuals: {scores}")
+        self.write_log(f"Best individual score: {best_ind.score}")
+        self.write_log(f"Best allocation: {best_ind.task_allocation}")
+        self.write_log(f"GA running time: {time.time() - start_time:.2f} seconds")
         best_allocation = []
         for key in best_ind.task_allocation_node.keys():
             best_allocation.extend(best_ind.task_allocation_node[key])
 
         logger.info("GA running time: %s seconds" % (time.time() - start_time))
-    
+
         return best_allocation
-
-
-########## for test
-class test_colmena_queue:
-    def __init__(self):
-        self.result_list = {}
-
-
-if __name__ == "__main__":
-
-    hist_path = []
-    hist_path.append(
-        "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/simulation-results-20240319_230707.json"
-    )
-    hist_path.append(
-        "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/inference-results-20240319_230707.json"
-    )
-    hist_path.append(
-        "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/sampling-results-20240319_230707.json"
-    )
-    hist_path.append(
-        "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/training-results-20240319_230707.json"
-    )
-
-    methods = ['run_calculator', 'run_sampling', 'train', 'evaluate']
-    topics = ['simulate', 'sample', 'train', 'infer']
-    test_queue = test_colmena_queue()
-    my_available_task = {}
-    for method in methods:
-        my_available_task[method] = []
-
-    with open(
-        "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/task_queue_audit.pkl",
-        'rb',
-    ) as f:
-        hist_task_queue_audit = pickle.load(f)
-
-    evosch = evosch2(
-        resources={"node1": {"cpu": 56, "gpu": 4}, "node2": {"cpu": 56, "gpu": 4}},
-        at=available_task(my_available_task),
-        hist_data=historical_data(methods=methods, queue=test_queue),
-    )
-
-    evosch.hist_data.get_features_from_his_json(hist_path)
-
-    # add data class
-    from fff.simulation.utils import read_from_string, write_to_string
-
-    # add task
-    for _ in range(10):
-        to_run_f = self.hist_task_queue_audit.pop(0)
-        task_type = 'audit'
-        atoms = to_run_f.atoms
-        atoms.set_center_of_mass([0, 0, 0])
-        xyz = write_to_string(atoms, 'xyz')
-
-        result = Result(
-            (input_args, input_kwargs),
-            method=method,
-            topic=topic,
-            keep_inputs=_keep_inputs,
-            serialization_method=self.serialization_method,
-            task_info=task_info,
-            # Takes either the user specified or a default
-            resources=resources or ResourceRequirements(),
-            **ps_kwargs,
-        )
-        result.time_serialize_inputs, proxies = result.serialize()

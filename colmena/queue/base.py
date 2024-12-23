@@ -77,6 +77,7 @@ class ColmenaQueues:
         # Store the list of topics and other simple options
         self.enable_fcfs = True
         self.enable_smart_sch = False
+        self.enable_mrsa = False
         logger.info(f'using stragegy: fcfs {self.enable_fcfs}, evo {self.enable_smart_sch}')
         self.topics = set(topics)
         self.methods = set(methods)
@@ -267,7 +268,7 @@ class ColmenaQueues:
                 logger.info(
                     f'Client received a {result_obj.method} result with topic {topic}, restore resources: remaining resources on node {node} are {self.smart_sch.evo_sch.resources[node]}'
                 )
-
+                self.enough_resources_flag.set()
                 if self.best_allocation:
                     self.trigger_submit_task(self.best_allocation)
                 else:
@@ -528,6 +529,7 @@ class ColmenaQueues:
                 logger.info(
                     'All nodes are blocked or have no tasks to submit, stopping submission.'
                 )
+                self.enough_resources_flag.clear()
                 break
 
         # remain task are waiting for resources, every n seconds trigger submit
