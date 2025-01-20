@@ -1,50 +1,67 @@
-# import modules
-from asyncio import futures
-import copy
-from ctypes import Union
-from itertools import accumulate
-from pathlib import Path
-import logging
+# Standard library imports
 import uuid
-import re
-import shutil
-from collections import deque, OrderedDict, defaultdict
-from typing import Collection, Dict, Any, Optional, ClassVar, Union, List
-from copy import deepcopy
-import json
-from functools import partial, update_wrapper
-import pandas as pd
-import numpy as np
-import time
-import pickle
-import random
-import concurrent.futures
-import sys
-import os
-import psutil
+import copy
 import gc
-import heapq
-import threading
+import json
+import logging
 import multiprocessing
-import queue
+import os
+import random
+import subprocess
+import sys
+import threading
+import time
+import datetime
+import heapq
+from collections import defaultdict, deque, OrderedDict
 from dataclasses import dataclass, field, asdict, is_dataclass
+from functools import partial, update_wrapper
+from pathlib import Path
+from typing import Any, ClassVar, Collection, Dict, List, Literal, Optional, Union
 
+# Third-party library imports
+import numpy as np
+# import pandas as pd
+from pandas import DataFrame
+import psutil
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+
+# Lazy imports for heavy ML modules
+# def get_ml_models():
+#     from sklearn.linear_model import Ridge, ElasticNet
+#     return Ridge, ElasticNet
+
+# Local application imports
 from colmena.models import Result
 
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression, Ridge, ElasticNet
-from sklearn.pipeline import Pipeline
+# Configure logging
+logger = logging.getLogger(__name__)
 
-import datetime
+# Path configuration
+def setup_path():
+    relative_path = "~/project/colmena/multisite_"
+    absolute_path = os.path.expanduser(relative_path)
+    if absolute_path not in sys.path:
+        sys.path.append(absolute_path)
 
-relative_path = "~/project/colmena/multisite_"
-absolute_path = os.path.expanduser(relative_path)
-sys.path.append(absolute_path)
+setup_path()
+
 from my_util.data_structure import *
 
-logger = logging.getLogger(__name__)
+# Define module exports
+# __all__ = [
+#     'SmartScheduler',
+#     'agent_pilot',
+#     'individual',
+#     'available_task',
+#     'Sch_data',
+#     'evosch2',
+#     'FCFSScheduler'
+# ]
 
 
 def dataclass_to_dict(obj):
@@ -121,6 +138,29 @@ class SmartScheduler:
         # processes = len(self.node_resources)
         processes = 4
         self.pool = multiprocessing.Pool(processes=processes)
+        
+
+        hist_path = []
+        hist_path.append(
+            "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/test_data/simulation-results-20241224-116.json"
+        )
+        hist_path.append(
+            "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/test_data/simulation-results-20241224-152.json"
+        )
+
+        hist_path.append(
+            "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/inference-results-20240319_230707.json"
+        )
+        hist_path.append(
+            "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/sampling-results-20241211.json"
+        )
+        hist_path.append(
+            "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/training-results-20241211.json"
+        )
+        self.sch_data.historical_task_data.get_features_from_his_json(hist_path)
+        # self.sch_data.Task_time_predictor.polynomial_train(self.sch_data.historical_task_data.historical_data)
+        
+        logger.info('init smart scheduler')
         
     def __del__(self):
         self.pool.close()
@@ -242,118 +282,284 @@ class SmartScheduler:
             info['reason'] = "no limit exceed"
             return 1, info
         
-    def run_sch(self):
+    def run_sch(self, method = "mrsa", model_type="powSum"):
+        """运行调度器
+
+        Args:
+            method (str, optional): 选择ga或mrsa调度器. Defaults to "ga".
+            model_type (str, optional): 选择mrsa时设置amdMax, amdSum, powMax, powSum四种性能模型. Defaults to "powSum".
+
+        Returns:
+            _type_: _description_
+        """
+        if method == "ga":
         # run evo sch
-        with self.sch_lock:
-            all_tasks = self.sch_data.avail_task.get_all()
-            all_tasks = copy.deepcopy(all_tasks)
-            bese_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
-            self.best_result = self.evo_sch.best_ind
-            return bese_allocation
-        
-    def run_mrsa_scheduler(self):
+            with self.sch_lock:
+                all_tasks = self.sch_data.avail_task.get_all()
+                all_tasks = copy.deepcopy(all_tasks)
+                best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
+                self.best_result = self.evo_sch.best_ind
+                return best_allocation
+        elif method == "mrsa":
+            with self.sch_lock:
+                self.sch_data.Task_time_predictor.train(self.sch_data.historical_task_data.historical_data)
+                best_allocation = self.run_mrsa_scheduler(model_type=model_type)
+                return best_allocation
+
+    def run_mrsa_scheduler(self, model_type="powSum"):
         """使用MRSA替代GA进行调度"""
         # 准备输入文件
-        folder_name = prepare_mrsa_input(self.sch_data)
+        folder_name = prepare_mrsa_input(self.sch_data, model_type)
         folder_name = "fitune_surrogate"
         
         # 获取资源配置
-        total_cpu = sum(node['cpu'] for node in self.available_resources.values())
-        total_gpu = sum(node['gpu'] for node in self.available_resources.values())
+        # total_cpu = sum(node['cpu'] for node in self.available_resources.values())
+        # total_gpu = sum(node['gpu'] for node in self.available_resources.values())
+        first_node = list(self.available_resources.keys())[0]
+        total_cpu = self.available_resources[first_node]['cpu']
+        total_gpu = self.available_resources[first_node]['gpu']
         
         # 调用MRSA调度器
-        cmd = f"python3 /home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/alphaMaster.py {folder_name} 2 {total_cpu} {total_gpu} powMax {folder_name}"
+        cmd = f"python3 /home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/alphaMaster.py {folder_name} 2 {total_cpu} {total_gpu} {model_type} {folder_name}"
+        logger.info(f'Running MRSA scheduler with command: {cmd}')
         print(cmd)
-        os.system(cmd)
+        # os.system(cmd)
+        try:
+            # 使用 subprocess.run 执行命令
+            result = subprocess.run(cmd, shell=True, check=True, text=True, capture_output=True)
+            
+            # 打印输出
+            logger.info(result.stdout)
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f'Command "{cmd}" failed with return code {e.returncode}')
+            logger.error(f'Standard output: {e.stdout}')
+            logger.error(f'Standard error: {e.stderr}')
         
         # 读取调度结果
-        # TODO: 解析MRSA的输出格式，转换为当前调度器的任务分配格式
+        task_allocation = parse_mrsa_output(folder_name, self.sch_data, self.available_resources)
+        logger.info(f'MRSA scheduler finished with {len(task_allocation)} tasks allocated')
         
-        # return task_allocation
+        return task_allocation
 
 ## mrsa 调度
-def convert_polynomial_to_powermax(task_list, polynomial_models, output_folder="fitune_surrogate", dimensions=2):
-    """将多项式模型预测的任务转换为power-max格式的任务描述
+def convert_to_mrsa_models(task_list, models, model_type, output_folder="fitune_surrogate", dimensions=2):
+    """将机器学习模型转换为MRSA支持的四种性能模型
     
     Args:
-        task_list: 当前需要调度的任务列表
-        polynomial_models: 训练好的多项式模型字典 {method: model}
-        output_folder: 输出文件夹名称
-        dimensions: 资源维度数(CPU+GPU)
+        task_list: 任务列表
+        models: 训练好的ML模型（多项式或随机森林）
+        model_type: 'amdSum'|'amdMax'|'powSum'|'powMax'
+        output_folder: 输出目录
+        dimensions: 资源维度数
     """
-    # 确保输出目录存在
-    os.makedirs(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/tasks_parameters/{output_folder}", exist_ok=True)
-    
-    def estimate_powermax_params(task, model):
-        """估计单个任务的power-max模型参数"""
-        # 采样不同资源配置下的运行时间
-        cpu_points = np.linspace(1, 16, 8)  # 根据实际情况调整范围
-        gpu_points = np.linspace(0, 4, 5)   # 根据实际情况调整范围
+    def estimate_model_params(task, ml_model, model_type):
+        """估计单个任务的模型参数"""
+        # 采样点设置
+        cpu_points = np.linspace(1, 32, 10)
+        gpu_points = np.linspace(1, 4, 5)   
         
-        times = []
-        configs = []
+        base_cpu = 1
+        base_gpu = 0
+        if task.get('resources.gpu', 0) >= 1:
+            base_gpu = 1
+        # 1. 估计串行部分 s0
+        X_serial = DataFrame([{
+            'message_sizes.inputs': task.get('message_sizes.inputs', 1),
+            'resources.cpu': base_cpu,
+            'resources.gpu': base_gpu
+        }])
+        serial_time = max(1, np.expm1(ml_model.predict(X_serial)[0]))
         
+        # 2. 分别采样CPU和GPU的影响
+        times_cpu = []  # 仅CPU配置
+        times_gpu = []  # CPU+GPU配置
+        configs_cpu = []
+        configs_gpu = []
+        
+        logger.info(f'Estimating model parameters for task {task["task_id"]}, serial time: {serial_time}')
+        # CPU采样
         for cpu in cpu_points:
-            for gpu in gpu_points:
-                X = pd.DataFrame([{
+            X = DataFrame([{
+                'message_sizes.inputs': task.get('message_sizes.inputs', 1),
+                'resources.cpu': cpu,
+                'resources.gpu': base_gpu
+            }])
+            time = max(1, np.expm1(ml_model.predict(X)[0]))
+            logger.info(f'CPU sample: CPU={cpu}, time={time}, features={X.to_dict(orient="records")}')
+            times_cpu.append(time)
+            configs_cpu.append([cpu])
+        
+        # GPU采样（固定最优CPU）如果原任务没有GPU，则不进行GPU采样
+        if base_gpu != 0:
+            optimal_cpu = cpu_points[np.argmin(times_cpu)]
+            for gpu in gpu_points[1:]:  # 跳过gpu=0
+                X = DataFrame([{
+                    'message_sizes.inputs': task.get('message_sizes.inputs', 1),
+                    'resources.cpu': optimal_cpu,
+                    'resources.gpu': gpu
+                }])
+                time = max(1, np.expm1(ml_model.predict(X)[0]))
+                logger.info(f'GPU sample: CPU={cpu}, time={time}, features={X.to_dict(orient="records")}')
+                times_gpu.append(time)
+                configs_gpu.append([optimal_cpu, gpu])
+            
+        # 3. 根据不同模型类型估计参数
+        params = {}
+        # 估计串行比例
+        s0 = min(times_cpu)  # 基础串行时间
+        
+        # CPU部分
+        X_cpu = np.array([1/c for c in cpu_points]).reshape(-1, 1)
+        y_cpu = np.array(times_cpu) - s0
+        reg_cpu = LinearRegression()
+        reg_cpu.fit(X_cpu, y_cpu)
+        s1 = max(0.1, reg_cpu.coef_[0])  # CPU并行部分权重
+        
+        # GPU部分
+        if len(times_gpu) > 0:
+            X_gpu = np.array([1/g for g in gpu_points[1:]]).reshape(-1, 1)
+            y_gpu = np.array(times_gpu) - s0 - s1/optimal_cpu
+            reg_gpu = LinearRegression()
+            reg_gpu.fit(X_gpu, y_gpu)
+            s2 = max(0, reg_gpu.coef_[0])  # GPU并行部分权重
+        else:
+            s2 = 0
+            
+        params = {
+            's0': s0,
+            's1': s1,
+            's2': s2,
+            'a1': 1.0,  # Amdahl模型固定为1
+            'a2': 1.0
+        }
+        if model_type.startswith('amd'):  # Amdahl模型
+            return params
+            
+        else:  # Power模型
+            s0_amdahl = max(0, reg_cpu.intercept_)
+            serial_time = min(s0-2, s0_amdahl) # 避免0或-inf
+            # CPU部分
+            X_cpu = np.log([c for c in cpu_points]).reshape(-1, 1)
+            y_cpu = np.log(np.array(times_cpu) - serial_time)
+            reg_cpu = LinearRegression()
+            reg_cpu.fit(X_cpu, y_cpu)
+            s1 = np.exp(reg_cpu.intercept_)
+            a1 = -reg_cpu.coef_[0]
+            
+            # GPU部分
+            if len(times_gpu) > 0:
+                X_gpu = np.log(gpu_points[1:]).reshape(-1, 1)
+                logger.info(f'GPU debug!! times_gpu: {times_gpu}, serial_time: {serial_time}, s1: {s1}, a1: {a1}')
+                y_gpu = np.log(np.array(times_gpu) - serial_time - s1/(optimal_cpu**a1))
+                reg_gpu = LinearRegression()
+                reg_gpu.fit(X_gpu, y_gpu)
+                s2 = np.exp(reg_gpu.intercept_)
+                a2 = -reg_gpu.coef_[0]
+            else:
+                s2 = 0
+                a2 = 1.0
+                
+            params = {
+                's0': serial_time,
+                's1': max(0.1, s1),
+                's2': max(0, s2),
+                'a1': max(0.1, min(a1, 1.0)),
+                'a2': max(0.1, min(a2, 1.0))
+            }
+            
+        return params
+    
+    # 验证函数
+    def validate_conversion(task, ml_model, params, model_type):
+        """验证转换精度"""
+        def predict_mrsa_time(cpu, gpu, params, model_type):
+            if model_type == 'amdSum':
+                return (params['s0'] + 
+                       params['s1']/cpu + 
+                       (params['s2']/gpu if gpu > 0 else 0))
+            elif model_type == 'amdMax':
+                return (params['s0'] + 
+                       max(params['s1']/cpu,
+                           params['s2']/gpu if gpu > 0 else 0))
+            elif model_type == 'powSum':
+                return (params['s0'] + 
+                       params['s1']/(cpu**params['a1']) + 
+                       (params['s2']/(gpu**params['a2']) if gpu > 0 else 0))
+            else:  # powMax
+                return (params['s0'] + 
+                       max(params['s1']/(cpu**params['a1']),
+                           params['s2']/(gpu**params['a2']) if gpu > 0 else 0))
+        
+        # 验证点
+        cpu_test = np.linspace(1, 16, 8)
+        gpu_test = np.linspace(0, 4, 5)
+        
+        errors = []
+        for cpu in cpu_test:
+            for gpu in gpu_test:
+                # ML模型预测
+                X = DataFrame([{
                     'message_sizes.inputs': task.get('message_sizes.inputs', 1),
                     'resources.cpu': cpu,
                     'resources.gpu': gpu
                 }])
-                predicted_time = model.predict(X)[0]
-                if predicted_time < 1:
-                    predicted_time = 1  # 防止出现负数或零
-                times.append(predicted_time)
-                configs.append([cpu, gpu])
+                ml_time = np.expm1(ml_model.predict(X)[0])
+                
+                # MRSA模型预测
+                mrsa_time = predict_mrsa_time(cpu, gpu, params, model_type)
+                
+                error = abs(ml_time - mrsa_time) / ml_time
+                errors.append(error)
         
-        # 转换为power-max模型参数
-        # 取对数进行线性拟合
-        X = np.array([[np.log(1/c), np.log(1/g) if g > 0 else 0] for c, g in configs])
-        y = np.log(times)
-        
-        reg = LinearRegression()
-        reg.fit(X, y)
-        
-        # 提取参数
-        W = np.exp(reg.intercept_)
-        alpha_cpu = reg.coef_[0]
-        alpha_gpu = reg.coef_[1]
-        
-        # 标准化alpha值到(0,1]范围
-        alpha_cpu = min(max(alpha_cpu, 0.1), 1.0)
-        alpha_gpu = min(max(alpha_gpu, 0.1), 1.0)
-        
-        return {
-            'W': W,
-            's_1': 1.0,  # CPU权重
-            's_2': 0.0,  # GPU权重
-            'a_1': alpha_cpu,
-            'a_2': alpha_gpu
-        }
+        return np.mean(errors), np.max(errors)
     
-    # 为每个任务生成参数并写入文件
-    with open(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/tasks_parameters/{output_folder}/sample0.txt", 'w') as f:
+    # 主处理流程
+    os.makedirs(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/tasks_parameters/{output_folder}", exist_ok=True)
+    output_file = f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/tasks_parameters/{output_folder}/sample0.txt"
+    
+    conversion_stats = {
+        'mean_error': [],
+        'max_error': [],
+        'task_ids': []
+    }
+    
+    with open(output_file, 'w') as f:
         for task in task_list:
             method = task['method']
-            model = polynomial_models[method]
+            ml_model = models[method]
             
-            params = estimate_powermax_params(task, model)
+            # 估计参数
+            params = estimate_model_params(task, ml_model, model_type)
             
-            # 格式: name s0 s1 s2 a1 a2
-            line = f"{task['task_id']} {0.0} {params['s_1']} {params['s_2']} {params['a_1']} {params['a_2']}\n"
+            # 验证转换精度
+            mean_err, max_err = validate_conversion(task, ml_model, params, model_type)
+            conversion_stats['mean_error'].append(mean_err)
+            conversion_stats['max_error'].append(max_err)
+            conversion_stats['task_ids'].append(task['task_id'])
+            
+            # 写入MRSA格式
+            line = f"{task['task_id']} {params['s0']} {params['s1']} {params['s2']} {params['a1']} {params['a2']}\n"
             f.write(line)
             
-def prepare_mrsa_input(sch_data, output_folder="fitune_surrogate"):
+    return conversion_stats
+
+def prepare_mrsa_input(sch_data, model_type="powSum", output_folder="fitune_surrogate"):
     """准备MRSA调度器输入"""
     # 获取当前需要调度的任务
     tasks = []
     for task_id, task in sch_data.sch_task_list.items():
         tasks.append(task)
     
+    if sch_data.Task_time_predictor.model_type == "random_forest":
+        models = sch_data.Task_time_predictor.random_forest_models
+    elif sch_data.Task_time_predictor.model_type == "polynomial":
+        models = sch_data.Task_time_predictor.polynomial_models
     # 转换为power-max格式
-    convert_polynomial_to_powermax(
+    convert_to_mrsa_models(
         task_list=tasks,
-        polynomial_models=sch_data.Task_time_predictor.polynomial_models,
+        models=models,
+        model_type=model_type,
         output_folder=output_folder
     )
     
@@ -366,6 +572,63 @@ def prepare_mrsa_input(sch_data, output_folder="fitune_surrogate"):
     os.makedirs(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/allocation/{output_folder}", exist_ok=True)
     
     return output_folder
+def generate_node_cycle(nodes):
+    """生成循环节点选择器"""
+    node_list = list(nodes)
+    index = 0
+    while True:
+        yield node_list[index]
+        index = (index + 1) % len(node_list)
+        
+def parse_mrsa_output(output_folder, sch_data, node_resources):
+    """解析MRSA的输出结果并转换为task_allocation格式
+    
+    Args:
+        output_folder: MRSA输出文件夹名称
+        sch_data: 调度器数据对象
+        node_resources: 节点资源信息
+    
+    Returns:
+        task_allocation: 列表形式的任务分配方案
+    """
+    task_allocation = []
+
+    which_node = generate_node_cycle(node_resources.keys())
+    
+    # 读取MRSA的输出文件
+    with open(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/allocation/{output_folder}/sample0seq.txt", 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) < 3:
+                continue
+                
+            task_id = parts[0]
+            cpu_count = int(parts[1])
+            gpu_count = int(parts[2])
+            node1_res = node_resources['node1']
+            if cpu_count > node1_res['cpu']:
+                cpu_count = node1_res['cpu']
+            # 获取任务的method
+            task = sch_data.sch_task_list.get(task_id)
+            if not task:
+                continue
+                
+            # 简单的循环分配节点
+            node = next(which_node)
+            
+            # 创建task_allocation格式的任务描述
+            new_task = {
+                "name": task['method'],
+                "task_id": task_id,
+                "resources": {
+                    "cpu": cpu_count,
+                    "gpu": gpu_count,
+                    "node": node
+                }
+            }
+            task_allocation.append(new_task)
+    
+    return task_allocation
 
 # evo stargety here
 @dataclass
@@ -400,7 +663,7 @@ class individual:
 
     # deepcopy individual
     def copy(self):
-        copied_individual = deepcopy(self)
+        copied_individual = copy.deepcopy(self)
         copied_individual.individual_id = individual._next_id
         individual._next_id += 1
         return copied_individual
@@ -448,10 +711,10 @@ class Sch_data(SingletonClass):
         self.Task_time_predictor = TaskTimePredictor(methods, features)
 
     def add_result_obj(self, result: Result):
-        logger.info('add task to scheduler {}'.format(result.task_id))
+        # logger.info('add task to scheduler {}'.format(result.task_id))
         self.result_list[result.task_id] = result
         sch_task = self.historical_task_data.get_sch_task_from_result_object(result)
-        logger.info(f"sch_task: {sch_task}")
+        logger.info(f"add sch_task: {sch_task}")
         self.sch_task_list[sch_task['task_id']] = sch_task
 
     def pop_result_obj(self, task_id):
@@ -561,18 +824,6 @@ class available_task(SingletonClass):
 
 
 class HistoricalData:
-    # default feature parameters for each method performance model
-    # features: Dict[str, List[str]] = field(
-    #     default_factory=lambda: {
-    #         "default": [
-    #             "method",
-    #             "message_sizes.inputs",
-    #             "resources.cpu",
-    #             "resources.gpu",
-    #             "time_running",
-    #         ]
-    #     }
-    # )
 
     def __init__(self, methods: Collection[str], queue=None):
         self.methods = methods
@@ -586,9 +837,6 @@ class HistoricalData:
                 "time_running",
             ]
         }
-        # self.submit_task_seq = []
-        # self.complete_task_seq = []
-        # self.trigger_info = []
         self.historical_data = {method: [] for method in methods}
 
     def add_feature_from_user(self, method: str, feature_values: List[str]):
@@ -688,29 +936,69 @@ class HistoricalData:
 
 
 class TaskTimePredictor:
-    # set smart scheduler config for model and parameters
     random_forest_models: dict[str, RandomForestRegressor] = field(default_factory=dict)
     polynomial_models: dict[str, Any] = field(default_factory=dict)
-    def __init__(self, methods, features):
+    
+    def __init__(self, methods, features, model_type: Literal["random_forest", "polynomial"] = "random_forest"):
+        """
+        初始化任务时间预测器
+        
+        Args:
+            methods: 方法列表
+            features: 特征列表
+            model_type: 模型类型，可选 "random_forest" 或 "polynomial"
+        """
+        self.model_type = model_type
         self.features = features
         self.random_forest_models = {}
         self.polynomial_models = {}
+        
+        # 初始化模型
         for method in methods:
-            #     self.random_forest_models[method] = RandomForestRegressor(
-            #         n_estimators=100, random_state=42, n_jobs=-1
-            #     )
+            if model_type == "polynomial":
+                self.random_forest_models[method] = None
+            else:
+                self.polynomial_models[method] = None
 
-            self.polynomial_models[method] = None
+    def train(self, train_data):
+        """统一的训练入口"""
+        if self.model_type == "random_forest":
+            self.random_forest_train(train_data)
+        elif self.model_type == "polynomial":
+            self.polynomial_train(train_data)
 
-    # unify train function?
-    def random_forest_train(self):
-        pass
+    def random_forest_train(self, train_data):
+        for method, data in train_data.items():
+            df = DataFrame(data)
+            df.dropna(inplace=True)
+            
+            if len(data) < 5:
+                continue
+
+            x = df.drop(columns=['time_running', 'method', 'task_id'])
+            y = df['time_running']
+            
+            y = np.log1p(y)
+            
+            rf_model = Pipeline([
+                ('scaler', StandardScaler()),
+                ('rf', RandomForestRegressor(
+                    n_estimators=100,
+                    max_depth=None,
+                    min_samples_split=2,
+                    min_samples_leaf=1,
+                    max_features='auto',
+                    n_jobs=-1,
+                    random_state=42
+                ))
+            ])
+            
+            rf_model.fit(x, y)
+            self.random_forest_models[method] = rf_model
 
     def polynomial_train(self, train_data):
         for method, data in train_data.items():
-            # model = np.polyfit(data['x'], data['y'], 3)
-            # self.polynomial_models[method] = model
-            df = pd.DataFrame(data)
+            df = DataFrame(data)
             df.dropna(inplace=True)
             if len(data) < 5:
                 continue
@@ -718,40 +1006,38 @@ class TaskTimePredictor:
             x = df.drop(columns=['time_running', 'method', 'task_id'])
             y = df['time_running']
 
-            # polunomialfeatures or np.polyfit
-            # original bad model
-            # poly_model = Pipeline(
-            #     [
-            #         ('poly_features', PolynomialFeatures(degree=3)),
-            #         ('linear_model', LinearRegression()),
-            #     ]
-            # )
             poly_model = Pipeline([
-                ('poly_features', PolynomialFeatures(
-                    degree=5,                    # 降低多项式次数，减少过拟合风险
-                    include_bias=False,          # 不包含偏置项，因为LinearRegression已经有截距
-                    # interaction_only=True        # 只包含交互项，不包含高次项
-                )),
-                ('linear_model', LinearRegression(
-                    fit_intercept=True,          # 包含截距项
-                    # positive=True,               # 强制系数为正，因为时间不能为负
-                    n_jobs=-1                    # 并行计算
-                ))
+                ('scaler', StandardScaler()),  # 添加标准化步骤
+                ('poly_features', PolynomialFeatures(degree=3)),
+                ('linear_model', LinearRegression()),
             ])
+            
+            y = np.log1p(y)
             poly_model.fit(x, y)
             self.polynomial_models[method] = poly_model
 
     def estimate_time(self, task):
+        """
+        预测单个任务的运行时间
+        
+        param:
+        task: 通过get_feature_from_task获取的任务特征
+        """
         method = task['method']
-        # result: Result = self.queue.result_list[task['task_id']]
-
-        # Polynomial Prediction
-        poly_model = self.polynomial_models[method]
-        # task_features = self.extract_feature_from_task(task, result)
-        X_poly = pd.DataFrame([task]).drop(columns=['time_running', 'method', 'task_id'])
-        poly_prediction = poly_model.predict(X_poly)[0] if poly_model else None
-
-        return poly_prediction
+        X = DataFrame([task]).drop(columns=['time_running', 'method', 'task_id'])
+        
+        if self.model_type == "random_forest":
+            model = self.random_forest_models.get(method)
+            if model is None:
+                return None
+            prediction = model.predict(X)[0]
+        elif self.model_type == "polynomial":
+            model = self.polynomial_models.get(method)
+            if model is None:
+                return None
+            prediction = model.predict(X)[0]
+            
+        return np.expm1(prediction)
 
     def extract_feature_from_task(self, task: Result, result: Result):
         task_features = {}
@@ -768,8 +1054,7 @@ class TaskTimePredictor:
         return task_features
 
     def estimate_ga_population(self, population, sch_task_list, all_node=False):
-
-        tasks_by_model = {}  # 以模型为键，将任务分组存储
+        tasks_by_model = {}
         for ind in population:
             if all_node:
                 task_allocation = []
@@ -785,258 +1070,196 @@ class TaskTimePredictor:
                 tasks_by_model[model_name].append(task)
 
         for model_name, tasks in tasks_by_model.items():
-            # model = self.random_forest_model[model_name]  # 获取对应的模型
-            model = self.polynomial_models[model_name]
+            if self.model_type == "random_forest":
+                model = self.random_forest_models.get(model_name)
+            elif self.model_type == "polynomial":
+                model = self.polynomial_models.get(model_name)
+                
+            if model is None:
+                continue
 
             feature_values = []
             for task in tasks:
-                # result: Result = result_list[task['task_id']]
-                # feature_dict = self.extract_feature_from_task(task, result)
-                feature = sch_task_list[task['task_id']]
+                feature = copy.deepcopy(sch_task_list[task['task_id']])
+                feature['resources.cpu'] = task['resources']['cpu']
+                feature['resources.gpu'] = task['resources']['gpu']
                 feature_values.append(feature)
 
-            X = pd.DataFrame(feature_values).drop(columns=['time_running', 'method', 'task_id'])
+            X = DataFrame(feature_values).drop(columns=['time_running', 'method', 'task_id'])
             predictions = model.predict(X)
-
+            predictions = np.expm1(predictions)
+            
             for task, runtime in zip(tasks, predictions):
                 task['total_runtime'] = runtime
-                # logger.info(f"Predicted runtime for task {task['task_id']}: {runtime}")
 
 
-@dataclass
-class historical_data(
-    SingletonClass
-):  # change to sch data, contain all data and transfer to child class in queue / thinker
-    features = [
-        "method",
-        "message_sizes.inputs",
-        # "worker_info.hostname", # for multinode executor # need vectorize for training
-        "resources.cpu",
-        "resources.gpu",
-        # "resources.thread",
-        "time_running",
-    ]
+# @dataclass
+# class historical_data(
+#     SingletonClass
+# ):  # change to sch data, contain all data and transfer to child class in queue / thinker
+#     features = [
+#         "method",
+#         "message_sizes.inputs",
+#         # "worker_info.hostname", # for multinode executor # need vectorize for training
+#         "resources.cpu",
+#         "resources.gpu",
+#         # "resources.thread",
+#         "time_running",
+#     ]
 
-    def __init__(self, methods: Collection[str], queue=None):
-        # submit history and complete history for cal the potential improvement
-        self.methods = methods
-        self.submit_task_seq = []
-        self.complete_task_seq = []
-        ## total submit / total complete
-        self.trigger_info = []
+#     def __init__(self, methods: Collection[str], queue=None):
+#         # submit history and complete history for cal the potential improvement
+#         self.methods = methods
+#         self.submit_task_seq = []
+#         self.complete_task_seq = []
+#         ## total submit / total complete
+#         self.trigger_info = []
 
-        # his data for predict time runnint
-        self.historical_data = {}
-        self.random_forest_model = {}
-        from sklearnex import patch_sklearn, unpatch_sklearn
+#         # his data for predict time runnint
+#         self.historical_data = {}
+#         self.random_forest_model = {}
+#         from sklearnex import patch_sklearn, unpatch_sklearn
 
-        patch_sklearn()
-        for method in self.methods:
-            self.historical_data[method] = []
-            self.random_forest_model[method] = RandomForestRegressor(
-                n_estimators=100, random_state=42, n_jobs=-1
-            )
+#         patch_sklearn()
+#         for method in self.methods:
+#             self.historical_data[method] = []
+#             self.random_forest_model[method] = RandomForestRegressor(
+#                 n_estimators=100, random_state=42, n_jobs=-1
+#             )
 
-        self.queue = queue
+#         self.queue = queue
 
-    # 根据任务提交和完成序列进行分析，以推测未来可能提交的任务
-    # def get_child_task(self, methods):
-    #     submit_task_seq = deepcopy(self.submit_task_seq)
-    #     complete_task_seq = deepcopy(self.complete_task_seq)
-    #     whole_seq = submit_task_seq + complete_task_seq
-    #     whole_seq.sort(key=lambda x: x['time'])
-    #     now_submit = {}
-    #     pre_complete = {}
-    #     has_submit = False
-    #     has_complete = False
+#     def add_data(self, feature_values: dict[str, Any]):
+#         method = feature_values['method']
+#         # if method not in self.historical_data:
+#         #     self.historical_data[method] = []
+#         #     self.random_forest_model[method] = RandomForestRegressor(n_estimators=100, random_state=42)
+#         if method not in self.historical_data:
+#             logger.warning(f"method {method} not in historical data")
+#         self.historical_data[method].append(feature_values)
 
-    #     def initialize():
-    #         for method in methods:
-    #             now_submit[method] = 0
-    #             pre_complete[method] = 0
+#     def get_features_from_result_object(self, result: Result):
+#         feature_values = {}
+#         for feature in self.features:
+#             value = result
+#             for key in feature.split('.'):
+#                 if isinstance(value, dict):
+#                     value = value.get(key)
+#                     break
+#                 else:
+#                     value = getattr(value, key)
+#             if feature == 'resources.gpu':
+#                 value = (
+#                     len(value) if isinstance(value, list) else 0
+#                 )  # 如果是list，则取长度，否则默认为0
+#                 # if value is None:
+#                 #     break
+#             feature_values[feature] = value
+#         self.add_data(feature_values)
 
-    #     def record():
-    #         self.trigger_info.append(
-    #             {"submit": deepcopy(now_submit), "complete": deepcopy(pre_complete)}
-    #         )
-    #         initialize()
+#     def get_features_from_his_json(self, his_json: Union[str, list[str]]):
+#         for path in his_json:
+#             with open(path, 'r') as f:
+#                 for line in f:
+#                     json_line = json.loads(line)
+#                     feature_values = {}
+#                     for feature in self.features:
+#                         value = json_line
+#                         for key in feature.split('.'):
+#                             value = value.get(key)
+#                             # if value is None:
+#                             #     break
+#                         feature_values[feature] = value
+#                     self.add_data(feature_values)
 
-    #     initialize()
+#     def random_forest_train(self):
+#         for method in self.historical_data:
+#             logger.info(f"train:{method} model")
+#             data = self.historical_data[method]
+#             df = DataFrame(data)
+#             df.dropna(inplace=True)
+#             if len(data) < 5:
+#                 continue
+#             model = self.random_forest_model[method]
 
-    #     while whole_seq:
-    #         task = whole_seq.pop()
-    #         if task["type"] == "submit":
-    #             if has_submit and has_complete:
-    #                 record()
-    #                 has_complete = False
-    #             now_submit[task["method"]] += 1
-    #             has_submit = True
-    #         elif has_submit:
-    #             pre_complete[task["method"]] += 1
-    #             has_complete = True
-    #         else:
-    #             # no submit task after complete task
-    #             # just pass
-    #             pass
-    #     # After processing all tasks, record any remaining tasks
-    #     if has_submit and has_complete:
-    #         record()
+#             X = []
+#             y = []
+#             for feature_values in data:
+#                 X = df.drop(columns=['time_running', 'method', 'task_id'])
+#                 y = df['time_running']
+#             # X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=1.0, random_state=42)
+#             model.fit(X, y)
+#             logger.info(
+#                 f"method: {method}, random forest regressor score: {model.score(X, y)}"
+#             )
+#             # print(f"method: {method}, random forest regressor score: {model.score(X, y)}")
 
-    #     return self.trigger_info
+#     def estimate_time(self, task):
+#         # use allocate resource to estimate running time
+#         method = task['name']
+#         result: Result = self.queue.result_list[task['task_id']]
+#         model = self.random_forest_model[method]
+#         feature_values = {}
+#         for feature in self.features:
+#             value = result
+#             for key in feature.split('.'):
+#                 if isinstance(value, dict):
+#                     value = value.get(key)
+#                     break
+#                 else:
+#                     value = getattr(value, key)
+#             if key in task['resources']:
+#                 value = task['resources'][key]
+#             feature_values[feature] = value
+#         X = DataFrame([feature_values]).drop(columns=['time_running', 'method', 'task_id'])
+#         return model.predict(X)[0]
 
-    # # get the last trigger info until all method has trigger submit task
-    # def get_closest_trigger_info(self):
-    #     cloest_trigger_info = []
-    #     method_flag = {}
-    #     for method in self.methods:
-    #         method_flag[method] = False
-    #     for info in self.trigger_info:
-    #         cloest_trigger_info.append(info)
-    #         for method in self.methods:
-    #             if info["submit"][method] > 0:
-    #                 method_flag[method] = True
-    #         if all(method_flag.values()):
-    #             return cloest_trigger_info
+#     def estimate_batch(self, population, all_node=False):
+#         def extract_feature_values(task, result):
+#             feature_values = {}
+#             for feature in self.features:
+#                 value = result
+#                 for key in feature.split('.'):
+#                     if isinstance(value, dict):
+#                         value = value.get(key)
+#                         break
+#                     else:
+#                         value = getattr(value, key)
+#                 if key in task['resources']:
+#                     value = task['resources'][key]
+#                 feature_values[feature] = value
+#             return feature_values
 
-    # def get_child_task_time(self, method):
-    #     trigger_info = self.get_closest_trigger_info()
-    #     info = trigger_info.pop()
-    #     # get each task info from historyical data
-    #     # add to the individual task allocation
-    #     # TODO
-    #     pass
+#         tasks_by_model = {}  # 以模型为键，将任务分组存储
+#         for ind in population:
+#             if all_node:
+#                 task_allocation = []
+#                 for key in ind.task_allocation_node.keys():
+#                     task_allocation.extend(ind.task_allocation_node[key])
+#             else:
+#                 task_allocation = ind.task_allocation
 
-    def add_data(self, feature_values: dict[str, Any]):
-        method = feature_values['method']
-        # if method not in self.historical_data:
-        #     self.historical_data[method] = []
-        #     self.random_forest_model[method] = RandomForestRegressor(n_estimators=100, random_state=42)
-        if method not in self.historical_data:
-            logger.warning(f"method {method} not in historical data")
-        self.historical_data[method].append(feature_values)
+#             for task in task_allocation:
+#                 model_name = task['name']
+#                 if model_name not in tasks_by_model:
+#                     tasks_by_model[model_name] = []
+#                 tasks_by_model[model_name].append(task)
 
-    def get_features_from_result_object(self, result: Result):
-        feature_values = {}
-        for feature in self.features:
-            value = result
-            for key in feature.split('.'):
-                if isinstance(value, dict):
-                    value = value.get(key)
-                    break
-                else:
-                    value = getattr(value, key)
-            if feature == 'resources.gpu':
-                value = (
-                    len(value) if isinstance(value, list) else 0
-                )  # 如果是list，则取长度，否则默认为0
-                # if value is None:
-                #     break
-            feature_values[feature] = value
-        self.add_data(feature_values)
+#         for model_name, tasks in tasks_by_model.items():
+#             model = self.random_forest_model[model_name]  # 获取对应的模型
 
-    def get_features_from_his_json(self, his_json: Union[str, list[str]]):
-        for path in his_json:
-            with open(path, 'r') as f:
-                for line in f:
-                    json_line = json.loads(line)
-                    feature_values = {}
-                    for feature in self.features:
-                        value = json_line
-                        for key in feature.split('.'):
-                            value = value.get(key)
-                            # if value is None:
-                            #     break
-                        feature_values[feature] = value
-                    self.add_data(feature_values)
+#             feature_values = []
+#             for task in tasks:
+#                 result: Result = self.queue.result_list[task['task_id']]
+#                 feature_dict = extract_feature_values(task, result)
+#                 feature_values.append(feature_dict)
 
-    def random_forest_train(self):
-        for method in self.historical_data:
-            logger.info(f"train:{method} model")
-            data = self.historical_data[method]
-            df = pd.DataFrame(data)
-            df.dropna(inplace=True)
-            if len(data) < 5:
-                continue
-            model = self.random_forest_model[method]
+#             X = DataFrame(feature_values).drop(columns=['time_running', 'method', 'task_id'])
+#             predictions = model.predict(X)
 
-            X = []
-            y = []
-            for feature_values in data:
-                X = df.drop(columns=['time_running', 'method', 'task_id'])
-                y = df['time_running']
-            # X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=1.0, random_state=42)
-            model.fit(X, y)
-            logger.info(
-                f"method: {method}, random forest regressor score: {model.score(X, y)}"
-            )
-            # print(f"method: {method}, random forest regressor score: {model.score(X, y)}")
-
-    def estimate_time(self, task):
-        # use allocate resource to estimate running time
-        method = task['name']
-        result: Result = self.queue.result_list[task['task_id']]
-        model = self.random_forest_model[method]
-        feature_values = {}
-        for feature in self.features:
-            value = result
-            for key in feature.split('.'):
-                if isinstance(value, dict):
-                    value = value.get(key)
-                    break
-                else:
-                    value = getattr(value, key)
-            if key in task['resources']:
-                value = task['resources'][key]
-            feature_values[feature] = value
-        X = pd.DataFrame([feature_values]).drop(columns=['time_running', 'method', 'task_id'])
-        return model.predict(X)[0]
-
-    def estimate_batch(self, population, all_node=False):
-        def extract_feature_values(task, result):
-            feature_values = {}
-            for feature in self.features:
-                value = result
-                for key in feature.split('.'):
-                    if isinstance(value, dict):
-                        value = value.get(key)
-                        break
-                    else:
-                        value = getattr(value, key)
-                if key in task['resources']:
-                    value = task['resources'][key]
-                feature_values[feature] = value
-            return feature_values
-
-        tasks_by_model = {}  # 以模型为键，将任务分组存储
-        for ind in population:
-            if all_node:
-                task_allocation = []
-                for key in ind.task_allocation_node.keys():
-                    task_allocation.extend(ind.task_allocation_node[key])
-            else:
-                task_allocation = ind.task_allocation
-
-            for task in task_allocation:
-                model_name = task['name']
-                if model_name not in tasks_by_model:
-                    tasks_by_model[model_name] = []
-                tasks_by_model[model_name].append(task)
-
-        for model_name, tasks in tasks_by_model.items():
-            model = self.random_forest_model[model_name]  # 获取对应的模型
-
-            feature_values = []
-            for task in tasks:
-                result: Result = self.queue.result_list[task['task_id']]
-                feature_dict = extract_feature_values(task, result)
-                feature_values.append(feature_dict)
-
-            X = pd.DataFrame(feature_values).drop(columns=['time_running', 'method', 'task_id'])
-            predictions = model.predict(X)
-
-            for task, runtime in zip(tasks, predictions):
-                task['total_runtime'] = runtime
-                # logger.info(f"Predicted runtime for task {task['task_id']}: {runtime}")
+#             for task, runtime in zip(tasks, predictions):
+#                 task['total_runtime'] = runtime
+#                 # logger.info(f"Predicted runtime for task {task['task_id']}: {runtime}")
 
 
 class FCFSScheduler:
@@ -1044,7 +1267,7 @@ class FCFSScheduler:
         self,
         resources: dict = None,
         at: available_task = None,
-        hist_data: historical_data = None,
+        hist_data: HistoricalData = None,
         sch_data: Sch_data = None
     ):
         self.node_resources = resources
@@ -1179,7 +1402,7 @@ class evosch2:
         self,
         resources: dict = None,
         at: available_task = None,
-        hist_data:historical_data = None,
+        hist_data:HistoricalData = None,
         sch_data: Sch_data = None,
         population_size=10,
     ):
@@ -1194,7 +1417,6 @@ class evosch2:
             )  # TODO gpu nums change to gpu_devices ids; next we need get ids from config
         self.resources_evo: dict = copy.deepcopy(self.resources)  # used in evosch
         logger.info("total resources: {}".format(self.resources_evo))
-        # self.hist_data: historical_data = hist_data
         self.sch_data: Sch_data = sch_data
         self.at: available_task = at  # available task
         self.population = []  # [individual,,,] # store all individual on single node
@@ -1513,6 +1735,7 @@ class evosch2:
                 total_gpu_time[min_node] += (
                     best_task['resources']['gpu'] * best_task['total_runtime']
                 )
+                best_task['resources']['node'] = min_node
                 completion_time[max_node], _ = (
                     self.calculate_completion_time_record_with_running_task(
                         self.node_resources[max_node],
@@ -1724,7 +1947,7 @@ class evosch2:
         ]
         cpu_range = min(
             16, cpu_upper_bound
-        )  # TODO tmp test, we could simulate memory page allocate method like [1,2,4,8,16]
+        )
         gpu_upper_bound = max(self.node_resources.values(), key=lambda x: x['gpu'])[
             'gpu'
         ]
@@ -2139,7 +2362,7 @@ class evosch2:
                 self.opt_gpu(population, ind2)
 
             self.sch_data.Task_time_predictor.estimate_ga_population(
-                population, self.sch_data.sch_task_list, all_node=True
+                population, self.sch_data.sch_task_list, all_node=False
             )
             scores = [self.fitness(ind, all_node=False) for ind in population]
             population = [population[i] for i in np.argsort(scores)[::-1]]
@@ -2184,8 +2407,10 @@ class evosch2:
             return ind.task_allocation
 
         self.population = self.generate_population_all(all_tasks=all_tasks, population_size=num_generations_all)
-        ## 增量更新
-        # self.sch_data.Task_time_predictor.polynomial_train(self.sch_data.historical_task_data.historical_data)
+        predict_model_train_time = time.time()
+        self.sch_data.Task_time_predictor.train(self.sch_data.historical_task_data.historical_data)
+        logger.info(f"Polynomial train time: {time.time() - predict_model_train_time:.2f} seconds")
+        
         self.sch_data.Task_time_predictor.estimate_ga_population(
             self.population, self.sch_data.sch_task_list, all_node=True
         )
@@ -2209,33 +2434,42 @@ class evosch2:
         #     # evo on each node， population size will influence the times for ga run
         for gen, a_ind in enumerate(self.population):
             self.write_log(f"\nGlobal Generation {gen + 1}")
-            self.write_log(f"Before load balance: {a_ind.task_allocation_node}")
-            self.load_balance(a_ind)
-            self.write_log(f"After load balance: {a_ind.task_allocation_node}")
-            
-            self.population_node = self.generate_population_in_node(
-                a_ind, num_generations_node
-            )  # generate ind on each node
-            
-            # logger.info(f"Generation_node, gen: {gen}: a_ind:{a_ind}")
-            # for node in self.node_resources.keys():
-            #     # logger.info(f"Node {node} evolution")
-            #     population = self.population_node[node]  # must shallow copy here
-            # # single node ind operation end
-            
-            # with multiprocessing.Pool() as pool:
-            results = pool.starmap(
-                self.run_ga_for_node,
-                [
-                    (node, population, num_runs_in_node, num_generations_node)
-                    for node, population in self.population_node.items()
-                ],
-            )
-            for node, task_allocation in results:
-                a_ind.task_allocation_node[node] = task_allocation
-                self.write_log(f"Node {node} final allocation: {task_allocation}")
+            # self.write_log(f"Before load balance: {a_ind.task_allocation_node}")
+            # self.load_balance(a_ind)
+            # self.write_log(f"After load balance: {a_ind.task_allocation_node}")
+            load_balance_times = 5
+            num_runs = np.linspace(1, num_runs_in_node, load_balance_times).astype(int)
+            for _ in range(load_balance_times):
+                self.population_node = self.generate_population_in_node(
+                    a_ind, num_generations_node
+                )  # generate ind on each node
+                
+                # 串行处理每个节点
+                for node, population in self.population_node.items():
+                    results = self.run_ga_for_node(
+                        node, 
+                        population, 
+                        # num_runs_in_node, 
+                        num_runs[_],
+                        num_generations_node
+                    )
+                    node, task_allocation = results
+                    a_ind.task_allocation_node[node] = task_allocation
+                    self.write_log(f"Node {node} final allocation: {task_allocation}")
+                
+                # # 并行处理每个节点
+                # results = pool.starmap(
+                #     self.run_ga_for_node,
+                #     [
+                #         (node, population, num_runs_in_node, num_generations_node)
+                #         for node, population in self.population_node.items()
+                #     ],
+                # )
+                # for node, task_allocation in results:
+                #     a_ind.task_allocation_node[node] = task_allocation
+                #     self.write_log(f"Node {node} final allocation: {task_allocation}")
 
-            # all node ind operation end
+                # all node ind operation end
         # global ind operation here
         scores = [self.fitness(ind, all_node=True) for ind in self.population]
         # logger.info(f"Generation {gen}: best ind score:{self.population[0].score}")

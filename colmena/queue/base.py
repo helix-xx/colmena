@@ -75,9 +75,8 @@ class ColmenaQueues:
         """
 
         # Store the list of topics and other simple options
-        self.enable_fcfs = True
-        self.enable_smart_sch = False
-        self.enable_mrsa = False
+        self.enable_fcfs = False
+        self.enable_smart_sch = True
         logger.info(f'using stragegy: fcfs {self.enable_fcfs}, evo {self.enable_smart_sch}')
         self.topics = set(topics)
         self.methods = set(methods)
@@ -94,16 +93,10 @@ class ColmenaQueues:
 
         # register and init data class for scheduler
         # Extract historical data to estimate running time, and register estimate_methods. by YXX
-        historical_data = evo_sch.historical_data(methods=methods, queue=self)
         self._available_tasks = evo_sch.available_task(self.methods)
         self._available_task_capacity = available_task_capacity
 
         self.queue_sch_lock = threading.Lock()
-        # self.evosch: evo_sch.evosch2 = evo_sch.evosch2(
-        #     resources=available_resources,
-        #     at=self._available_tasks,
-        #     hist_data=historical_data,
-        # )
         self.best_allocation = None  # best allocation
         
         # enough resources flag, trigger scheduler to submit task
@@ -403,6 +396,10 @@ class ColmenaQueues:
 
     def fcfs_submit_task(self):
         # 判断是否有任务
+        # 判断是否有资源
+        if self.enough_resources_flag.is_set() is False:
+            return
+        
         if len(self.smart_sch.fcfs_sch.task_queue) == 0:
             return
         while len(self.smart_sch.fcfs_sch.task_queue) > 0:
@@ -410,9 +407,6 @@ class ColmenaQueues:
             task_id = self.smart_sch.fcfs_sch.task_queue[0]
             result = self.smart_sch.sch_data.get_result_obj(task_id)
             
-            
-            # gpu_value = result.inputs[1]['gpu']
-            # cpu_value = result.inputs[1]['cpu']
             gpu_value = result.resources.gpu
             cpu_value = result.resources.cpu
             required_resources = {'cpu': cpu_value, 'gpu': gpu_value}
