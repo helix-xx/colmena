@@ -139,23 +139,25 @@ class SmartScheduler:
         processes = 4
         self.pool = multiprocessing.Pool(processes=processes)
         
+        self.sch_data.usr_path = os.path.expanduser('~')
+        
 
         hist_path = []
         hist_path.append(
-            "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/test_data/simulation-results-20241224-116.json"
+            os.path.join(self.sch_data.usr_path, 'test_data/simulation-results-20241224-116.json')
         )
         hist_path.append(
-            "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/test_data/simulation-results-20241224-152.json"
+            os.path.join(self.sch_data.usr_path, 'test_data/simulation-results-20241224-152.json')
         )
 
         hist_path.append(
-            "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/inference-results-20240319_230707.json"
+            os.path.join(self.sch_data.usr_path, 'inference-results-20240319_230707.json')
         )
         hist_path.append(
-            "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/sampling-results-20241211.json"
+            os.path.join(self.sch_data.usr_path, 'sampling-results-20241211.json')
         )
         hist_path.append(
-            "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/runs/hist_data/training-results-20241211.json"
+            os.path.join(self.sch_data.usr_path, 'training-results-20241211.json')
         )
         self.sch_data.historical_task_data.get_features_from_his_json(hist_path)
         # self.sch_data.Task_time_predictor.polynomial_train(self.sch_data.historical_task_data.historical_data)
@@ -320,7 +322,8 @@ class SmartScheduler:
         total_gpu = self.available_resources[first_node]['gpu']
         
         # 调用MRSA调度器
-        cmd = f"python3 /home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/alphaMaster.py {folder_name} 2 {total_cpu} {total_gpu} {model_type} {folder_name}"
+        mrsa_path = self.sch_data.usr_path + "/project/colmena/multisite_/mrsa"
+        cmd = f"python3 {mrsa_path}/alphaMaster.py {folder_name} 2 {total_cpu} {total_gpu} {model_type} {folder_name}"
         logger.info(f'Running MRSA scheduler with command: {cmd}')
         print(cmd)
         # os.system(cmd)
@@ -515,8 +518,9 @@ def convert_to_mrsa_models(task_list, models, model_type, output_folder="fitune_
         return np.mean(errors), np.max(errors)
     
     # 主处理流程
-    os.makedirs(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/tasks_parameters/{output_folder}", exist_ok=True)
-    output_file = f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/tasks_parameters/{output_folder}/sample0.txt"
+    usr_path = os.path.expanduser('~')
+    os.makedirs(f"{usr_path}/project/colmena/multisite_/mrsa/files/tasks_parameters/{output_folder}", exist_ok=True)
+    output_file = f"{usr_path}/project/colmena/multisite_/mrsa/files/tasks_parameters/{output_folder}/sample0.txt"
     
     conversion_stats = {
         'mean_error': [],
@@ -564,12 +568,13 @@ def prepare_mrsa_input(sch_data, model_type="powSum", output_folder="fitune_surr
     )
     
     # 创建空的依赖关系文件夹和文件(因为不考虑依赖关系)
-    os.makedirs(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/precedence_constraints/{output_folder}", exist_ok=True)
-    with open(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/precedence_constraints/{output_folder}/sample0.txt", 'w') as f:
+    usr_path = os.path.expanduser('~')
+    os.makedirs(f"{usr_path}/project/colmena/multisite_/mrsa/files/precedence_constraints/{output_folder}", exist_ok=True)
+    with open(f"{usr_path}/project/colmena/multisite_/mrsa/files/precedence_constraints/{output_folder}/sample0.txt", 'w') as f:
         pass
     
     # 创建分配结果文件夹
-    os.makedirs(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/allocation/{output_folder}", exist_ok=True)
+    os.makedirs(f"{sch_data.usr_path}/project/colmena/multisite_/mrsa/files/allocation/{output_folder}", exist_ok=True)
     
     return output_folder
 def generate_node_cycle(nodes):
@@ -596,7 +601,8 @@ def parse_mrsa_output(output_folder, sch_data, node_resources):
     which_node = generate_node_cycle(node_resources.keys())
     
     # 读取MRSA的输出文件
-    with open(f"/home/lizz_lab/cse12232433/project/colmena/multisite_/mrsa/files/allocation/{output_folder}/sample0seq.txt", 'r') as f:
+    usr_path = os.path.expanduser('~')
+    with open(f"{usr_path}/project/colmena/multisite_/mrsa/files/allocation/{output_folder}/sample0seq.txt", 'r') as f:
         for line in f:
             parts = line.strip().split()
             if len(parts) < 3:
@@ -1436,7 +1442,8 @@ class evosch2:
 
         # 添加日志相关的初始化
         self.timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.log_dir = "/home/lizz_lab/cse12232433/project/colmena/multisite_/finetuning-surrogates/job_out"
+        self.usr_path = os.path.expanduser("~")
+        self.log_dir = f"{self.usr_path}/project/colmena/multisite_/finetuning-surrogates/job_out"
         self.log_path = os.path.join(self.log_dir, f'run_ga_{self.timestamp}.log')
 
         # 确保日志目录存在
