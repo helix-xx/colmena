@@ -77,7 +77,7 @@ class ColmenaQueues:
         # Store the list of topics and other simple options
         self.enable_fcfs = False
         self.enable_smart_sch = True
-        logger.info(f'using stragegy: fcfs {self.enable_fcfs}, evo {self.enable_smart_sch}')
+        logger.info(f'using strategy: fcfs {self.enable_fcfs}, evo {self.enable_smart_sch}')
         self.topics = set(topics)
         self.methods = set(methods)
         self.topics.add('default')

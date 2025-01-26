@@ -3,7 +3,6 @@ import uuid
 import copy
 import gc
 import json
-import logging
 import multiprocessing
 import os
 import random
@@ -19,9 +18,10 @@ from functools import partial, update_wrapper
 from pathlib import Path
 from typing import Any, ClassVar, Collection, Dict, List, Literal, Optional, Union
 
+from functools import lru_cache
 # Third-party library imports
 import numpy as np
-# import pandas as pd
+import pandas as pd
 from pandas import DataFrame
 import psutil
 from sklearn.ensemble import RandomForestRegressor
@@ -39,6 +39,8 @@ from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 from colmena.models import Result
 
 # Configure logging
+import logging
+logging.getLogger("sklearnex").setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Path configuration
@@ -74,6 +76,7 @@ def dataclass_to_dict(obj):
     else:
         return obj
 
+# TODO，打表每个任务在不同资源下的运行时间，减少重复预测开销。预测函数 lru cache？
 
 class agent_pilot:
     # 使用历史提交任务建模多项式拟合，判断那种任务适合作为下一次提交任务
@@ -144,20 +147,20 @@ class SmartScheduler:
 
         hist_path = []
         hist_path.append(
-            os.path.join(self.sch_data.usr_path, 'test_data/simulation-results-20241224-116.json')
+            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/test_data/simulation-results-20241224-116.json')
         )
         hist_path.append(
-            os.path.join(self.sch_data.usr_path, 'test_data/simulation-results-20241224-152.json')
+            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/test_data/simulation-results-20241224-152.json')
         )
 
         hist_path.append(
-            os.path.join(self.sch_data.usr_path, 'inference-results-20240319_230707.json')
+            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/inference-results-20240319_230707.json')
         )
         hist_path.append(
-            os.path.join(self.sch_data.usr_path, 'sampling-results-20241211.json')
+            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/sampling-results-20241211.json')
         )
         hist_path.append(
-            os.path.join(self.sch_data.usr_path, 'training-results-20241211.json')
+            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/training-results-20241211.json')
         )
         self.sch_data.historical_task_data.get_features_from_his_json(hist_path)
         # self.sch_data.Task_time_predictor.polynomial_train(self.sch_data.historical_task_data.historical_data)
@@ -284,7 +287,7 @@ class SmartScheduler:
             info['reason'] = "no limit exceed"
             return 1, info
         
-    def run_sch(self, method = "mrsa", model_type="powSum"):
+    def run_sch(self, method = "ga", model_type="powSum"):
         """运行调度器
 
         Args:
@@ -555,10 +558,12 @@ def prepare_mrsa_input(sch_data, model_type="powSum", output_folder="fitune_surr
     for task_id, task in sch_data.sch_task_list.items():
         tasks.append(task)
     
-    if sch_data.Task_time_predictor.model_type == "random_forest":
-        models = sch_data.Task_time_predictor.random_forest_models
-    elif sch_data.Task_time_predictor.model_type == "polynomial":
-        models = sch_data.Task_time_predictor.polynomial_models
+    # if sch_data.Task_time_predictor.model_type == "random_forest":
+    #     models = sch_data.Task_time_predictor.random_forest_models
+    # elif sch_data.Task_time_predictor.model_type == "polynomial":
+    #     models = sch_data.Task_time_predictor.polynomial_models
+    
+    models = sch_data.Task_time_predictor._models
     # 转换为power-max格式
     convert_to_mrsa_models(
         task_list=tasks,
@@ -942,10 +947,20 @@ class HistoricalData:
 
 
 class TaskTimePredictor:
-    random_forest_models: dict[str, RandomForestRegressor] = field(default_factory=dict)
-    polynomial_models: dict[str, Any] = field(default_factory=dict)
+    methods: List[str]
+    features: Dict[str, List[str]]
+    model_type: Literal["random_forest", "polynomial"] = "polynomial"
     
-    def __init__(self, methods, features, model_type: Literal["random_forest", "polynomial"] = "random_forest"):
+    _models: Dict[str, Pipeline] = {}
+    _feature_scalers: Dict[str, StandardScaler] = {}
+    
+    # 缓存训练数据的统计信息
+    _feature_stats: Dict[str, Dict[str, tuple]] = {}
+    
+    # random_forest_models: dict[str, RandomForestRegressor] = field(default_factory=dict)
+    # polynomial_models: dict[str, Any] = field(default_factory=dict)
+    
+    def __init__(self, methods, features, model_type: Literal["random_forest", "polynomial"] = "polynomial"):
         """
         初始化任务时间预测器
         
@@ -956,111 +971,120 @@ class TaskTimePredictor:
         """
         self.model_type = model_type
         self.features = features
-        self.random_forest_models = {}
-        self.polynomial_models = {}
+        self.methods = methods
+        # self.random_forest_models = {}
+        # self.polynomial_models = {}
         
         # 初始化模型
-        for method in methods:
-            if model_type == "polynomial":
-                self.random_forest_models[method] = None
-            else:
-                self.polynomial_models[method] = None
 
-    def train(self, train_data):
-        """统一的训练入口"""
+        # for method in methods:
+        #     if model_type == "polynomial":
+        #         self.random_forest_models[method] = None
+        #     else:
+        #         self.polynomial_models[method] = None
+    
+        """初始化模型"""
+        # from sklearnex import patch_sklearn, unpatch_sklearn
+        # patch_sklearn()
+        for method in self.methods:
+            self._init_model(method)
+            
+    def _init_model(self, method: str):
+        """为每个方法初始化模型pipeline"""
         if self.model_type == "random_forest":
-            self.random_forest_train(train_data)
-        elif self.model_type == "polynomial":
-            self.polynomial_train(train_data)
-
-    def random_forest_train(self, train_data):
-        for method, data in train_data.items():
-            df = DataFrame(data)
-            df.dropna(inplace=True)
-            
-            if len(data) < 5:
-                continue
-
-            x = df.drop(columns=['time_running', 'method', 'task_id'])
-            y = df['time_running']
-            
-            y = np.log1p(y)
-            
-            rf_model = Pipeline([
-                ('scaler', StandardScaler()),
-                ('rf', RandomForestRegressor(
-                    n_estimators=100,
-                    max_depth=None,
-                    min_samples_split=2,
-                    min_samples_leaf=1,
-                    max_features='auto',
-                    n_jobs=-1,
-                    random_state=42
-                ))
-            ])
-            
-            rf_model.fit(x, y)
-            self.random_forest_models[method] = rf_model
-
-    def polynomial_train(self, train_data):
-        for method, data in train_data.items():
-            df = DataFrame(data)
-            df.dropna(inplace=True)
-            if len(data) < 5:
-                continue
-
-            x = df.drop(columns=['time_running', 'method', 'task_id'])
-            y = df['time_running']
-
-            poly_model = Pipeline([
-                ('scaler', StandardScaler()),  # 添加标准化步骤
+            model = RandomForestRegressor(
+                n_estimators=100,
+                max_depth=None,
+                min_samples_split=2,
+                min_samples_leaf=1,
+                n_jobs=-1,
+                random_state=42
+            )
+        else:
+            model = Pipeline([
                 ('poly_features', PolynomialFeatures(degree=3)),
-                ('linear_model', LinearRegression()),
+                ('linear_model', LinearRegression())
             ])
             
-            y = np.log1p(y)
-            poly_model.fit(x, y)
-            self.polynomial_models[method] = poly_model
-
-    def estimate_time(self, task):
-        """
-        预测单个任务的运行时间
-        
-        param:
-        task: 通过get_feature_from_task获取的任务特征
-        """
-        method = task['method']
-        X = DataFrame([task]).drop(columns=['time_running', 'method', 'task_id'])
-        
-        if self.model_type == "random_forest":
-            model = self.random_forest_models.get(method)
-            if model is None:
-                return None
-            prediction = model.predict(X)[0]
-        elif self.model_type == "polynomial":
-            model = self.polynomial_models.get(method)
-            if model is None:
-                return None
-            prediction = model.predict(X)[0]
+        self._models[method] = Pipeline([
+            ('scaler', StandardScaler()),
+            ('model', model)
+        ])
+    def train(self, train_data: Dict[str, List[Dict]]) -> Dict[str, float]:
+        """统一的训练入口，返回每个方法的训练得分"""
+        scores = {}
+        for method, data in train_data.items():
+            if len(data) < 5:  # 数据太少，跳过训练
+                continue
+                
+            # 转换为numpy数组以提高性能
+            X, y = self._prepare_training_data(data)
+            if X is None or y is None:
+                continue
+                
+            # 训练并记录得分
+            try:
+                self._models[method].fit(X, y)
+                scores[method] = self._models[method].score(X, y)
+            except Exception as e:
+                logger.error(f"Training failed for method {method}: {str(e)}")
+                continue
+                
+        return scores
+    
+    def _prepare_training_data(self, data: List[Dict]) -> tuple:
+        """准备训练数据，返回(X, y)"""
+        try:
+            df = pd.DataFrame(data)
+            df = df.dropna()
             
-        return np.expm1(prediction)
+            # 提取特征和目标值
+            X = df.drop(columns=['time_running', 'method', 'task_id'])
+            y = np.log1p(df['time_running'])
+            
+            # 缓存特征统计信息供后续使用
+            self._cache_feature_stats(df)
+            
+            return X.to_numpy(), y.to_numpy()
+        except Exception as e:
+            logger.error(f"Data preparation failed: {str(e)}")
+            return None, None
+            
+    def _cache_feature_stats(self, df: pd.DataFrame):
+        """缓存特征统计信息"""
+        for col in df.columns:
+            if col not in ['time_running', 'method', 'task_id']:
+                self._feature_stats[col] = (
+                    float(df[col].mean()),
+                    float(df[col].std())
+                )
+                
+    @lru_cache(maxsize=1024)
+    def _predict_single(self, method: str, feature_tuple: tuple) -> float:
+        """预测单个任务的运行时间，使用tuple作为缓存key"""
+        try:
+            X = np.array(feature_tuple).reshape(1, -1)
+            prediction = self._models[method].predict(X)[0]
+            return np.expm1(prediction)
+        except Exception as e:
+            logger.error(f"Prediction failed for method {method}: {str(e)}")
+            return None
 
-    def extract_feature_from_task(self, task: Result, result: Result):
-        task_features = {}
-        for feature in self.features['default']:
-            value = result
-            for key in feature.split('.'):
-                if isinstance(value, dict):
-                    value = value.get(key)
-                else:
-                    value = getattr(value, key)
-            if key in task['resources']:
-                value = task['resources'][key]
-            task_features[feature] = value
-        return task_features
-
-    def estimate_ga_population(self, population, sch_task_list, all_node=False):
-        tasks_by_model = {}
+    def estimate_time(self, task: Dict) -> Optional[float]:
+        """预测单个任务的运行时间"""
+        method = task['method']
+        if method not in self._models:
+            return None
+            
+        # 将特征转换为可哈希的tuple用于缓存
+        features = self._extract_features(task)
+        feature_tuple = tuple(features.values())
+        
+        return self._predict_single(method, feature_tuple)
+    
+    def _group_tasks_by_method(self, population: List, all_node: bool) -> Dict:
+        """按方法分组收集任务"""
+        tasks_by_method = {}
         for ind in population:
             if all_node:
                 task_allocation = []
@@ -1070,33 +1094,234 @@ class TaskTimePredictor:
                 task_allocation = ind.task_allocation
 
             for task in task_allocation:
-                model_name = task['name']
-                if model_name not in tasks_by_model:
-                    tasks_by_model[model_name] = []
-                tasks_by_model[model_name].append(task)
-
-        for model_name, tasks in tasks_by_model.items():
-            if self.model_type == "random_forest":
-                model = self.random_forest_models.get(model_name)
-            elif self.model_type == "polynomial":
-                model = self.polynomial_models.get(model_name)
+                method = task['name']
+                if method not in tasks_by_method:
+                    tasks_by_method[method] = []
+                tasks_by_method[method].append(task)
                 
-            if model is None:
+        return tasks_by_method
+    
+    def estimate_ga_population(self, population: List, sch_task_list: Dict, 
+                             all_node: bool = False) -> None:
+        """批量预测种群中所有任务的运行时间"""
+        # 按方法分组收集任务
+        tasks_by_method = self._group_tasks_by_method(population, all_node)
+        
+        # 批量预测每个方法的任务
+        for method, tasks in tasks_by_method.items():
+            if method not in self._models:
+                logger.info(f"Model not found for method {method}")
                 continue
-
-            feature_values = []
+                
+            features_list = []
             for task in tasks:
-                feature = copy.deepcopy(sch_task_list[task['task_id']])
-                feature['resources.cpu'] = task['resources']['cpu']
-                feature['resources.gpu'] = task['resources']['gpu']
-                feature_values.append(feature)
+                feature = self._extract_features_from_sch_task(
+                    sch_task_list[task['task_id']],
+                    task['resources']
+                )
+                features_list.append(feature)
+                
+            # 批量预测
+            # X = np.array(features_list)
+            X = pd.DataFrame(features_list)
+            X.drop(columns=['time_running', 'method', 'task_id'], inplace=True)
+            X = X.to_numpy()
+            try:
+                predictions = self._models[method].predict(X)
+                predictions = np.expm1(predictions)
+                
+                # 更新任务的预测运行时间
+                for task, runtime in zip(tasks, predictions):
+                    task['total_runtime'] = runtime
+            except Exception as e:
+                logger.error(f"Batch prediction failed for method {method}: {str(e)}")
+                
+    def _extract_features(self, task: Dict) -> Dict:
+        """提取任务特征"""
+        features = {}
+        for feature in self.features['default']:
+            if feature not in ['time_running', 'method', 'task_id']:
+                value = self._get_nested_value(task, feature)
+                features[feature] = value
+        return features
+    
+    def _extract_features_from_sch_task(self, sch_task: Dict, 
+                                      resources: Dict) -> Dict:
+        """从调度任务中提取特征"""
+        features = sch_task.copy()
+        # 更新资源相关的特征
+        features['resources.cpu'] = resources['cpu']
+        features['resources.gpu'] = resources['gpu']
+        return features
+    
+    @staticmethod
+    def _get_nested_value(dict_obj: Dict, key_path: str) -> Any:
+        """获取嵌套字典中的值"""
+        current = dict_obj
+        for key in key_path.split('.'):
+            if isinstance(current, dict):
+                current = current.get(key)
+            else:
+                return None
+        return current
+    
+    def save_models(self, path: str):
+        """保存训练好的模型"""
+        import joblib
+        save_dict = {
+            'models': self._models,
+            'feature_stats': self._feature_stats,
+            'model_type': self.model_type
+        }
+        joblib.dump(save_dict, path)
+    
+    @classmethod
+    def load_models(cls, path: str, methods: List[str], 
+                   features: Dict[str, List[str]]):
+        """加载保存的模型"""
+        import joblib
+        saved_dict = joblib.load(path)
+        
+        predictor = cls(
+            methods=methods,
+            features=features,
+            model_type=saved_dict['model_type']
+        )
+        predictor._models = saved_dict['models']
+        predictor._feature_stats = saved_dict['feature_stats']
+        return predictor
+    # def train(self, train_data):
+    #     """统一的训练入口"""
+    #     if self.model_type == "random_forest":
+    #         self.random_forest_train(train_data)
+    #     elif self.model_type == "polynomial":
+    #         self.polynomial_train(train_data)
 
-            X = DataFrame(feature_values).drop(columns=['time_running', 'method', 'task_id'])
-            predictions = model.predict(X)
-            predictions = np.expm1(predictions)
+    # def random_forest_train(self, train_data: Dict[str, List[Dict]]):
+    #     for method, data in train_data.items():
+    #         df = DataFrame(data)
+    #         df.dropna(inplace=True)
             
-            for task, runtime in zip(tasks, predictions):
-                task['total_runtime'] = runtime
+    #         if len(data) < 5:
+    #             continue
+
+    #         x = df.drop(columns=['time_running', 'method', 'task_id'])
+    #         y = df['time_running']
+            
+    #         y = np.log1p(y)
+            
+    #         rf_model = Pipeline([
+    #             ('scaler', StandardScaler()),
+    #             ('rf', RandomForestRegressor(
+    #                 n_estimators=100,
+    #                 max_depth=None,
+    #                 min_samples_split=2,
+    #                 min_samples_leaf=1,
+    #                 # max_features='auto',
+    #                 n_jobs=-1,
+    #                 random_state=42
+    #             ))
+    #         ])
+            
+    #         rf_model.fit(x, y)
+    #         self.random_forest_models[method] = rf_model
+
+    # def polynomial_train(self, train_data):
+    #     for method, data in train_data.items():
+    #         df = DataFrame(data)
+    #         df.dropna(inplace=True)
+    #         if len(data) < 5:
+    #             continue
+
+    #         x = df.drop(columns=['time_running', 'method', 'task_id'])
+    #         y = df['time_running']
+
+    #         poly_model = Pipeline([
+    #             ('scaler', StandardScaler()),  # 添加标准化步骤
+    #             ('poly_features', PolynomialFeatures(degree=3)),
+    #             ('linear_model', LinearRegression()),
+    #         ])
+            
+    #         y = np.log1p(y)
+    #         poly_model.fit(x, y)
+    #         self.polynomial_models[method] = poly_model
+
+    # @lru_cache(maxsize=1024)
+    # def estimate_time(self, task):
+    #     """
+    #     预测单个任务的运行时间
+        
+    #     param:
+    #     task: 通过get_feature_from_task获取的任务特征
+    #     """
+    #     method = task['method']
+    #     X = DataFrame([task]).drop(columns=['time_running', 'method', 'task_id'])
+        
+    #     if self.model_type == "random_forest":
+    #         model = self.random_forest_models.get(method)
+    #         if model is None:
+    #             return None
+    #         prediction = model.predict(X)[0]
+    #     elif self.model_type == "polynomial":
+    #         model = self.polynomial_models.get(method)
+    #         if model is None:
+    #             return None
+    #         prediction = model.predict(X)[0]
+            
+    #     return np.expm1(prediction)
+
+    # def extract_feature_from_task(self, task: Result, result: Result):
+    #     task_features = {}
+    #     for feature in self.features['default']:
+    #         value = result
+    #         for key in feature.split('.'):
+    #             if isinstance(value, dict):
+    #                 value = value.get(key)
+    #             else:
+    #                 value = getattr(value, key)
+    #         if key in task['resources']:
+    #             value = task['resources'][key]
+    #         task_features[feature] = value
+    #     return task_features
+
+    # def estimate_ga_population(self, population, sch_task_list, all_node=False):
+    #     tasks_by_model = {}
+    #     for ind in population:
+    #         if all_node:
+    #             task_allocation = []
+    #             for key in ind.task_allocation_node.keys():
+    #                 task_allocation.extend(ind.task_allocation_node[key])
+    #         else:
+    #             task_allocation = ind.task_allocation
+
+    #         for task in task_allocation:
+    #             model_name = task['name']
+    #             if model_name not in tasks_by_model:
+    #                 tasks_by_model[model_name] = []
+    #             tasks_by_model[model_name].append(task)
+
+    #     for model_name, tasks in tasks_by_model.items():
+    #         if self.model_type == "random_forest":
+    #             model = self.random_forest_models.get(model_name)
+    #         elif self.model_type == "polynomial":
+    #             model = self.polynomial_models.get(model_name)
+                
+    #         if model is None:
+    #             continue
+
+    #         feature_values = []
+    #         for task in tasks:
+    #             feature = copy.deepcopy(sch_task_list[task['task_id']])
+    #             feature['resources.cpu'] = task['resources']['cpu']
+    #             feature['resources.gpu'] = task['resources']['gpu']
+    #             feature_values.append(feature)
+
+    #         X = DataFrame(feature_values).drop(columns=['time_running', 'method', 'task_id'])
+    #         predictions = model.predict(X)
+    #         predictions = np.expm1(predictions)
+            
+    #         for task, runtime in zip(tasks, predictions):
+    #             task['total_runtime'] = runtime
 
 
 # @dataclass
@@ -1671,6 +1896,7 @@ class evosch2:
 
     def load_balance(self, ind):
         # 不考虑通信迁移成本，只考虑每个节点的完成时间
+        # TODO 考虑迁移节点后 可能任务资源会超过节点限制。
         if not isinstance(ind, individual):
             raise ValueError("load_balance input is not individual")
 
@@ -1850,7 +2076,7 @@ class evosch2:
                     available_resources['gpu'] += gpus
                 else:
                     # all task release, resources still not enough
-                    raise ValueError("Not enough resources for all tasks")
+                    raise ValueError(f"Not enough resources for all tasks, required cpu:{required_cpu}, gpu:{required_gpu}, available cpu:{available_resources['cpu']}, gpu:{available_resources['gpu']}, total resources:{resources}")
 
             available_resources['cpu'] -= required_cpu
             available_resources['gpu'] -= required_gpu
@@ -1942,45 +2168,68 @@ class evosch2:
             index = (index + 1) % len(nodes)
 
     def generate_population_all(self, all_tasks, population_size: int):
-        ## 把每个任务轮转的放在每个节点上。
+        def find_suitable_node(required_cpu, required_gpu, node_iterator):
+            """寻找满足资源需求的节点"""
+            checked_nodes = set()
+            while True:
+                try:
+                    node = next(node_iterator)
+                    if node in checked_nodes:  # 所有节点都检查过了
+                        raise ValueError(f"No node available for task requiring CPU:{required_cpu}, GPU:{required_gpu}")
+                    
+                    checked_nodes.add(node)
+                    if (self.node_resources[node]['cpu'] >= required_cpu and 
+                        self.node_resources[node]['gpu'] >= required_gpu):
+                        return node
+                except StopIteration:  # 迭代器用完后重新开始
+                    node_iterator = self.generate_node()
 
         which_node = self.generate_node()
-        ## add all task to individual
         task_nums = self.at.get_task_nums(all_tasks)
-        # all_tasks = self.at.get_all()
         population = []
-        cpu_upper_bound = min(self.node_resources.values(), key=lambda x: x['cpu'])[
-            'cpu'
-        ]
-        cpu_range = min(
-            16, cpu_upper_bound
-        )
-        gpu_upper_bound = max(self.node_resources.values(), key=lambda x: x['gpu'])[
-            'gpu'
-        ]
-        gpu_range = min(4, gpu_upper_bound)  # should consider node GPU resources
+        
+        cpu_default_range = [1, 16] # should config in user input
+        gpu_default_range = [1, 4]
 
-        # TODO tmp test, resources range should determine by node
-        # generate random resources for individual
+        # 获取所有节点中最大的CPU和GPU资源上限
+        cpu_upper_bound = max(self.node_resources.values(), key=lambda x: x['cpu'])['cpu']
+        cpu_range = min(16, cpu_upper_bound) # user define range
+        gpu_upper_bound = max(self.node_resources.values(), key=lambda x: x['gpu'])['gpu']
+        gpu_range = min(4, gpu_upper_bound) # user define range
+
+        # 生成随机资源分配的个体
         for _ in range(population_size):
-            ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=self.node_resources)
-            task_queue = self.ind_init_task_allocation() # modify to multi node, dict{'node_name':[],'node_name':[]}
+            ind = individual(tasks_nums=copy.deepcopy(task_nums), total_resources=self.node_resources)
+            task_queue = self.ind_init_task_allocation()
+            
             for name, ids in all_tasks.items():
-                if len(ids)==0:
+                if len(ids) == 0:
                     continue
+                    
                 predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
                 for task_id in ids:
-                    node = next(which_node)
-                    new_task = {
-                        "name":name,
-                        "task_id": task_id,
-                        "resources":{
-                            "cpu": random.randint(1,cpu_range),
-                            "gpu": random.randint(1,gpu_range) if predefine_gpu>0 else 0, # 0 determin this task do not need gpu
-                            "node": node
+                    # 随机生成资源需求
+                    required_cpu = random.randint(1, cpu_range)
+                    required_gpu = random.randint(1, gpu_range) if predefine_gpu > 0 else 0
+                    
+                    try:
+                        # 寻找满足资源需求的节点
+                        node = find_suitable_node(required_cpu, required_gpu, which_node)
+                        new_task = {
+                            "name": name,
+                            "task_id": task_id,
+                            "resources": {
+                                "cpu": required_cpu,
+                                "gpu": required_gpu,
+                                "node": node
+                            }
                         }
-                    }
-                    task_queue[node].append(new_task)
+                        task_queue[node].append(new_task)
+                    except ValueError as e:
+                        logger.error(f"Failed to allocate task {task_id}: {str(e)}")
+                        raise
+                    
+            # 随机打乱每个节点上的任务顺序
             for key in task_queue.keys():
                 random.shuffle(task_queue[key])
 
@@ -1991,63 +2240,38 @@ class evosch2:
             ind.task_allocation = task_allocation
             population.append(ind)
 
-        # # initial resources minimum
-        ind = individual(tasks_nums=copy.deepcopy(task_nums),total_resources=self.node_resources)
+        # 添加最小资源配置的个体
+        ind = individual(tasks_nums=copy.deepcopy(task_nums), total_resources=self.node_resources)
         task_queue = self.ind_init_task_allocation()
-        for name, ids in all_tasks.items():
-            if len(ids)==0:
-                continue
-            predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
-            for task_id in ids:
-                node = next(which_node)
-                new_task = {
-                    "name":name,
-                    "task_id": task_id,
-                    "resources":{
-                        # "cpu": random.randint(1,16)
-                        "cpu": 1,
-                        "gpu": min(1,predefine_gpu), # zero or one
-                        "node": node
-                    }
-                }
-                task_queue[node].append(new_task)
-        for key in task_queue.keys():
-            random.shuffle(task_queue[key])
-        ind.task_allocation_node = task_queue
-        task_allocation = []
-        for key in task_queue.keys():
-            task_allocation.extend(task_queue[key])
-        ind.task_allocation = task_allocation
-        population.append(ind)
-
-        ## initial resources predifine
-        ind = individual(
-            tasks_nums=copy.deepcopy(task_nums),
-            total_resources=self.node_resources,
-        )
-        task_queue = self.ind_init_task_allocation()
+        
         for name, ids in all_tasks.items():
             if len(ids) == 0:
                 continue
-
-            predefine_cpu = self.sch_data.sch_task_list[ids[0]]['resources.cpu']
+                
             predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
-
             for task_id in ids:
-                node = next(which_node)
-                new_task = {
-                    "name": name,
-                    "task_id": task_id,
-                    "resources": {
-                        "cpu": predefine_cpu,
-                        "gpu": predefine_gpu,
-                        "node": node,
-                    },
-                }
-                task_queue[node].append(new_task)
+                required_cpu = 1 # user define range min or default
+                required_gpu = min(1, predefine_gpu)
+                
+                try:
+                    node = find_suitable_node(required_cpu, required_gpu, which_node)
+                    new_task = {
+                        "name": name,
+                        "task_id": task_id,
+                        "resources": {
+                            "cpu": required_cpu,
+                            "gpu": required_gpu,
+                            "node": node
+                        }
+                    }
+                    task_queue[node].append(new_task)
+                except ValueError as e:
+                    logger.error(f"Failed to allocate minimal resource task {task_id}: {str(e)}")
+                    raise
+
         for key in task_queue.keys():
             random.shuffle(task_queue[key])
-
+        
         ind.task_allocation_node = task_queue
         task_allocation = []
         for key in task_queue.keys():
@@ -2055,7 +2279,44 @@ class evosch2:
         ind.task_allocation = task_allocation
         population.append(ind)
 
-        # self.population = population
+        # 添加预定义资源配置的个体
+        ind = individual(tasks_nums=copy.deepcopy(task_nums), total_resources=self.node_resources)
+        task_queue = self.ind_init_task_allocation()
+        
+        for name, ids in all_tasks.items():
+            if len(ids) == 0:
+                continue
+                
+            predefine_cpu = self.sch_data.sch_task_list[ids[0]]['resources.cpu']
+            predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
+            
+            for task_id in ids:
+                try:
+                    node = find_suitable_node(predefine_cpu, predefine_gpu, which_node)
+                    new_task = {
+                        "name": name,
+                        "task_id": task_id,
+                        "resources": {
+                            "cpu": predefine_cpu,
+                            "gpu": predefine_gpu,
+                            "node": node
+                        }
+                    }
+                    task_queue[node].append(new_task)
+                except ValueError as e:
+                    logger.error(f"Failed to allocate predefined resource task {task_id}: {str(e)}")
+                    raise
+
+        for key in task_queue.keys():
+            random.shuffle(task_queue[key])
+            
+        ind.task_allocation_node = task_queue
+        task_allocation = []
+        for key in task_queue.keys():
+            task_allocation.extend(task_queue[key])
+        ind.task_allocation = task_allocation
+        population.append(ind)
+
         return population
 
     def generate_population_in_node(self, ind: individual, pop_size: int = 10):
@@ -2404,7 +2665,8 @@ class evosch2:
         pool = None,
     )->list:
         start_time = time.time()
-        self.write_log(f"\nStarting GA with {len(all_tasks)} tasks")
+        task_nums = self.at.get_task_nums(all_tasks)
+        self.write_log(f"\nStarting GA with {task_nums} tasks, tasks list: {all_tasks}")
         self.write_log(f"Running tasks: {self.running_task_node}")
         self.write_log(f"Available resources: {self.node_resources}")
 
@@ -2416,7 +2678,7 @@ class evosch2:
         self.population = self.generate_population_all(all_tasks=all_tasks, population_size=num_generations_all)
         predict_model_train_time = time.time()
         self.sch_data.Task_time_predictor.train(self.sch_data.historical_task_data.historical_data)
-        logger.info(f"Polynomial train time: {time.time() - predict_model_train_time:.2f} seconds")
+        logger.info(f"Predictor train time: {time.time() - predict_model_train_time:.2f} seconds")
         
         self.sch_data.Task_time_predictor.estimate_ga_population(
             self.population, self.sch_data.sch_task_list, all_node=True

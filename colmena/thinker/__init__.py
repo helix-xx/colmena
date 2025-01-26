@@ -103,12 +103,11 @@ def _task_submitter_agent(thinker: 'BaseThinker', process_func: Callable, task_t
             # if no task to submit in 1 second, trigger evoscheduler, we move timer in sendinputs as a watch dog, thus we dont consifer all agnet
             # timer = threading.Timer(3, lambda: timeout_callback(thinker)) 
             
-            # test dynamic task
-            # with thinker.queues.queue_sch_lock:
-            # thinker.logger.info('agent {} acquire resources'.format(task_type))
+            
             thinker.queues.enough_resources_flag.wait()
-            # if thinker.queues.smart_sch is not None:
+            # if thinker.queues.smart_sch is not None: 这里不应该阻塞任务提交。
             #     with thinker.queues.queue_sch_lock:
+            #         thinker.logger.info('agent {} acquire resources'.format(task_type))
             #         permit, info = thinker.queues.smart_sch.acquire_resources(task_type)
             permit = 0
             info = {}
