@@ -77,6 +77,7 @@ class ColmenaQueues:
         # Store the list of topics and other simple options
         self.enable_fcfs = False
         self.enable_smart_sch = True
+        self.scheduler_type = 'ga'
         logger.info(f'using strategy: fcfs {self.enable_fcfs}, evo {self.enable_smart_sch}')
         self.topics = set(topics)
         self.methods = set(methods)
@@ -102,10 +103,16 @@ class ColmenaQueues:
         # enough resources flag, trigger scheduler to submit task
         self.enough_resources_flag = Event()
         self.enough_resources_flag.set()
+        
+        # scheduler_pool for trigger multi scheduling on different batch tasks
+        import concurrent.futures
+        self.scheduler_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.schedule_future = None
+        # self.schedule_callback_lock = threading.Lock() # resources lock protect by queue_sch_lock
+        self.is_scheduling = threading.Event()
 
         # timer for trigger evo_sch
         timer = None
-
         def reset_timer():
             nonlocal timer
             # 重置计时器，取消之前的计时器并启动新的计时器
@@ -262,8 +269,10 @@ class ColmenaQueues:
                     f'Client received a {result_obj.method} result with topic {topic}, restore resources: remaining resources on node {node} are {self.smart_sch.evo_sch.resources[node]}'
                 )
                 self.enough_resources_flag.set()
-                if self.best_allocation:
-                    self.trigger_submit_task(self.best_allocation)
+                # if self.best_allocation:
+                if self.smart_sch.sch_data.avail_task.allocations:
+                    logger.info("restore resources and trigger submit task")
+                    self.trigger_submit_task(self.smart_sch.sch_data.avail_task.allocations) # 释放资源了提交新的任务
                 else:
                     self._add_task_flag.set()
                     if self.smart_sch.sch_data.avail_task.get_total_nums() > 0:
@@ -275,6 +284,8 @@ class ColmenaQueues:
                 self.enough_resources_flag.set()
                 # 恢复了资源后，尝试通过FCFS提交任务
                 self.fcfs_submit_task()
+        
+        logger.info(f'return to agent, with topic {topic}')
 
         return result_obj
 
@@ -427,108 +438,111 @@ class ColmenaQueues:
                 logger.info(f'Resources: result.resources is: {result.resources}')
     
     def trigger_submit_task(self, best_allocation: list):
-        logger.info(
-            f'Client trigger submit task, available task length is {len(best_allocation)}'
-        )
+        with self.queue_sch_lock:
+            # logger.info(
+            #     f'Client trigger submit task, available task length is {len(best_allocation)}'
+            # )
+            logger.info(f'Client trigger submit task, task length is len{best_allocation}, allocation  is {best_allocation}')
 
-        # 创建一个字典来保存每个节点的任务队列
-        node_task_queues = {}
-        for task in best_allocation:
-            node = task['resources']['node']
-            if node not in node_task_queues:
-                node_task_queues[node] = []
-            node_task_queues[node].append(task)
+            # 创建一个字典来保存每个节点的任务队列
+            node_task_queues = {}
+            for task in best_allocation:
+                node = task['resources']['node']
+                if node not in node_task_queues:
+                    node_task_queues[node] = []
+                node_task_queues[node].append(task)
 
-        # 创建一个字典来记录每个节点是否被阻塞
-        node_blocked = {node: False for node in node_task_queues.keys()}
+            # 创建一个字典来记录每个节点是否被阻塞
+            node_blocked = {node: False for node in node_task_queues.keys()}
 
-        while True:
-            all_nodes_blocked = True
-            for node, tasks in node_task_queues.items():
-                if node_blocked[node]:
-                    continue  # 如果节点被阻塞，跳过这个节点
+            while True:
+                all_nodes_blocked = True
+                for node, tasks in node_task_queues.items():
+                    if node_blocked[node]:
+                        continue  # 如果节点被阻塞，跳过这个节点
 
-                if not tasks:
-                    continue  # 如果没有任务，跳过这个节点
+                    if not tasks:
+                        continue  # 如果没有任务，跳过这个节点
 
-                task = tasks[0]
-                cpu_value = task['resources']['cpu']
-                gpu_value = task['resources']['gpu']
+                    task = tasks[0]
+                    cpu_value = task['resources']['cpu']
+                    gpu_value = task['resources']['gpu']
 
-                if (
-                    self.smart_sch.evo_sch.resources[node]['cpu'] < cpu_value
-                    or self.smart_sch.evo_sch.resources[node]['gpu'] < gpu_value
-                ):
-                    logger.info(
-                        f'Client trigger submit task, resource is not enough on node {node} for task {task["task_id"]}, marking this node as blocked'
-                    )
-                    node_blocked[node] = True  # 标记这个节点为阻塞状态
-                else:
-                    logger.info(
-                        f"submit task {task['task_id']} to queue on node {node}, remaining resources are {self.smart_sch.evo_sch.resources[node]}, consume resources are {task['resources']}"
-                    )
-                    self.smart_sch.evo_sch.resources[node]['cpu'] -= cpu_value
-                    self.smart_sch.evo_sch.resources[node]['gpu'] -= gpu_value
-                    # self.smart_sch.evo_sch.allocate_resources(task)
+                    if (
+                        self.smart_sch.evo_sch.resources[node]['cpu'] < cpu_value
+                        or self.smart_sch.evo_sch.resources[node]['gpu'] < gpu_value
+                    ):
+                        logger.info(
+                            f'Client trigger submit task, resource is not enough on node {node} for task {task["task_id"]}, marking this node as blocked'
+                        )
+                        node_blocked[node] = True  # 标记这个节点为阻塞状态
+                    else:
+                        logger.info(
+                            f"submit task {task['task_id']} to queue on node {node}, remaining resources are {self.smart_sch.evo_sch.resources[node]}, consume resources are {task['resources']}"
+                        )
+                        self.smart_sch.evo_sch.resources[node]['cpu'] -= cpu_value
+                        self.smart_sch.evo_sch.resources[node]['gpu'] -= gpu_value
+                        # self.smart_sch.evo_sch.allocate_resources(task)
 
-                    # 从原始 best_allocation 列表中移除该任务
-                    best_allocation.remove(task)
-                    tasks.pop(0)  # 从当前节点的任务队列中移除该任务
+                        # 从原始 best_allocation 列表中移除该任务
+                        # best_allocation.remove(task)
+                        self.smart_sch.sch_data.avail_task.remove_task_from_allocation(task)
+                        tasks.pop(0)  # 从当前节点的任务队列中移除该任务
 
-                    self.smart_sch.evo_sch.at.remove_task_id(
-                        task_name=task['name'], task_id=task['task_id']
-                    )
+                        self.smart_sch.evo_sch.at.remove_task_id(
+                            task_name=task['name'], task_id=task['task_id'], task_queue='scheduled'
+                        )
 
-                    predict_task = {
-                        'name': task['name'],
-                        'task_id': task['task_id'],
-                        'start_time': time.time(),
-                        'finish_time': None,
-                        'total_runtime': task['total_runtime'],
-                        'resources': task['resources'],
-                        'node': node,
-                    }
-                    predict_task['finish_time'] = (
-                        predict_task['start_time'] + predict_task['total_runtime']
-                    )
-                    self.smart_sch.evo_sch.running_task_node[node].append(predict_task)
+                        predict_task = {
+                            'name': task['name'],
+                            'task_id': task['task_id'],
+                            'start_time': time.time(),
+                            'finish_time': None,
+                            'total_runtime': task['total_runtime'],
+                            'resources': task['resources'],
+                            'node': node,
+                        }
+                        predict_task['finish_time'] = (
+                            predict_task['start_time'] + predict_task['total_runtime']
+                        )
+                        self.smart_sch.evo_sch.running_task_node[node].append(predict_task)
 
-                    result = self.smart_sch.sch_data.pop_result_obj(task['task_id'])
-                    result.inputs[1]['cpu'] = cpu_value
-                    gpu_value, self.smart_sch.evo_sch.resources[node]['gpu_devices'] = (
-                        self.smart_sch.evo_sch.resources[node]['gpu_devices'][
-                            :gpu_value
-                        ],
-                        self.smart_sch.evo_sch.resources[node]['gpu_devices'][
-                            gpu_value:
-                        ],
-                    )
-                    result.inputs[1]['gpu'] = gpu_value
-                    setattr(result.resources, 'cpu', cpu_value)
-                    setattr(result.resources, 'gpu', gpu_value)
-                    setattr(result.resources, 'node', node)
-                    topic = result.topic
-                    self._send_request(result.json(exclude_none=True), topic)
-                    logger.info(f'Resources: result.resources is: {result.resources}')
+                        result = self.smart_sch.sch_data.pop_result_obj(task['task_id'])
+                        result.inputs[1]['cpu'] = cpu_value
+                        gpu_value, self.smart_sch.evo_sch.resources[node]['gpu_devices'] = (
+                            self.smart_sch.evo_sch.resources[node]['gpu_devices'][
+                                :gpu_value
+                            ],
+                            self.smart_sch.evo_sch.resources[node]['gpu_devices'][
+                                gpu_value:
+                            ],
+                        )
+                        result.inputs[1]['gpu'] = gpu_value
+                        setattr(result.resources, 'cpu', cpu_value)
+                        setattr(result.resources, 'gpu', gpu_value)
+                        setattr(result.resources, 'node', node)
+                        topic = result.topic
+                        self._send_request(result.json(exclude_none=True), topic)
+                        logger.info(f'Resources: result.resources is: {result.resources}')
 
-                    # 重置节点的阻塞状态
-                    node_blocked[node] = False
+                        # 重置节点的阻塞状态
+                        node_blocked[node] = False
 
-            # 检查是否所有节点都被阻塞
-            all_nodes_blocked = all(
-                node_blocked[node] or not tasks
-                for node, tasks in node_task_queues.items()
-            )
-            if all_nodes_blocked:
-                logger.info(
-                    'All nodes are blocked or have no tasks to submit, stopping submission.'
+                # 检查是否所有节点都被阻塞
+                all_nodes_blocked = all(
+                    node_blocked[node] or not tasks
+                    for node, tasks in node_task_queues.items()
                 )
-                self.enough_resources_flag.clear()
-                break
+                if all_nodes_blocked:
+                    logger.info(
+                        'All nodes are blocked or have no tasks to submit, stopping submission.'
+                    )
+                    self.enough_resources_flag.clear()
+                    break
 
-        # remain task are waiting for resources, every n seconds trigger submit
-        if self.smart_sch.evo_sch.at.get_total_nums() > 0:
-            self.timer_trigger()
+            # remain task are waiting for resources, every n seconds trigger submit
+            # if self.smart_sch.evo_sch.at.get_total_nums() > 0:
+            #     self.timer_trigger()
 
     def trigger_sch(self):
         """Conditions that trigger scheduling and submission of tasks
@@ -537,67 +551,90 @@ class ColmenaQueues:
             result (Result): _description_
             topic (str, optional): _description_. Defaults to 'default'.
         """
-        if self.queue_sch_lock.acquire(blocking=False):
-            # only one thread could trigger this
-            logger.info("queue_sch_lock acquire")
-            # run_flag = False
-            try:
-                if self._available_tasks.get_total_nums() == 0:
-                    logger.info("no available task in the available task list")
-                    return
-                # no pending task on any node
-                # check any node have no pending task, go into runga
-                elif self.smart_sch.evo_sch.check_pending_task_on_node(
-                    self.best_allocation
-                ):
-                    logger.info(
-                        f'Client trigger evo_sch because no task pending on one or more node, available task is {self._available_tasks.task_ids}, pending task is {self.best_allocation}'
-                    )
-                else:
-                    logger.info(
-                        f'Client trigger evo_sch because task pending on all nodes, available task is {self._available_tasks.task_ids}, pending task is {self.best_allocation}'
-                    )
-                    return
-
-                # check any node have no pending task, go into runga
-                if self._add_task_flag.is_set() is False:
-                    # get ind and submit task on the sch order and resources
-                    # drop submitted task and record resources
-                    logger.info(
-                        f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}'
-                    )
-                    # logger.info(f'result list length is {len(self.result_list)}')
-                    logger.info(
-                        f'result list length is {self.smart_sch.sch_data.get_result_list_len()}'
-                    )
-                    # if self.evosch.resources['cpu']>=16:
-                    #     pass
-                    # else:
-                    #     logger.info(f'Client trigger evo_sch because resource is not enough, wait for resource')
-                    self.best_allocation = self.smart_sch.run_sch()
-                    self.trigger_submit_task(self.best_allocation)
-
-                if self._add_task_flag.is_set() is True:
-                    logger.info(
-                        f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done'
-                    )
-                    # logger.info(f'result list length is {len(self.result_list)}')
-                    logger.info(
-                        f'result list length is {self.smart_sch.sch_data.get_result_list_len()}'
-                    )
-                    self.best_allocation = self.smart_sch.run_sch()
-                    # except:
-                    #     logger.info(f'sch_task list {self.smart_sch.sch_data.sch_task_list}')
-                    #     logger.info(f'result list {self.smart_sch.sch_data.result_list}')
-                    #     logger.info(f'available task list {self.smart_sch.sch_data.avail_task.task_ids}')
-                    self.trigger_submit_task(self.best_allocation)
-            finally:
-                self.queue_sch_lock.release()
-                logger.info("queue_sch_lock release")
-        else:
-            logger.info("queue_sch_lock acquire fail, evosch is running")
+        # if self.queue_sch_lock.acquire(blocking=False): # async, check have running sch
+        if self.is_scheduling.is_set():
+            logger.info("evo_sch is running")
+            return
+        # 如果有正在运行的调度任务，检查是否完成
+        if self.schedule_future and not self.schedule_future.done():
+            logger.info("Previous scheduling task is still running")
             return
 
+        try:
+            if self._available_tasks.get_total_nums() == 0:
+                logger.info("no available task in the available task list")
+                return
+            # no pending task on any node
+            # check any node have no pending task, go into runga
+            # elif self.smart_sch.evo_sch.check_pending_task_on_node(
+            #     self.best_allocation
+            # ):
+            #     logger.info(
+            #         f'Client trigger evo_sch because no task pending on one or more node, available task is {self._available_tasks.task_ids}, pending task is {self.best_allocation}'
+            #     )
+            # else:
+            #     logger.info(
+            #         f'Client trigger evo_sch because task pending on all nodes, available task is {self._available_tasks.task_ids}, pending task is {self.best_allocation}'
+            #     )
+            #     return
+            
+            self.is_scheduling.set()
+
+            # check any node have no pending task, go into runga
+            if self._add_task_flag.is_set() is False:
+                logger.info(
+                    f'Client trigger evo_sch because capacity is full, available task is {self._available_tasks.task_ids}'
+                )
+                # logger.info(f'result list length is {len(self.result_list)}')
+                logger.info(
+                    f'result list length is {self.smart_sch.sch_data.get_result_list_len()}'
+                )
+                # self.best_allocation = self.smart_sch.run_sch()
+                # self.trigger_submit_task(self.smart_sch.sch_data.avail_task.allocations)
+                self.schedule_future = self.scheduler_pool.submit(self.smart_sch.run_sch, method=self.scheduler_type)
+                self.schedule_future.add_done_callback(self._schedule_callback)
+
+            elif self._add_task_flag.is_set() is True:
+                logger.info(
+                    f'Client trigger evo_sch because submit task time out, it may means that submit agent may block until submitted task is done'
+                )
+                # logger.info(f'result list length is {len(self.result_list)}')
+                logger.info(
+                    f'result list length is {self.smart_sch.sch_data.get_result_list_len()}'
+                )
+                # self.best_allocation = self.smart_sch.run_sch()
+                # self.trigger_submit_task(self.smart_sch.sch_data.avail_task.allocations)
+                self.schedule_future = self.scheduler_pool.submit(self.smart_sch.run_sch, method=self.scheduler_type)
+                self.schedule_future.add_done_callback(self._schedule_callback)
+        except Exception as e:
+            logger.error(f"trigger_sch error: {e}")
+            self.is_scheduling.clear()
+        # finally:
+            # self.queue_sch_lock.release()
+            # logger.info("queue_sch_lock release")
+        # else:
+        #     logger.info("queue_sch_lock acquire fail, evosch is running")
+        #     return
+    def _schedule_callback(self, future):
+        """调度完成后的回调函数"""
+        try:
+            if future.exception():
+                logger.error(f"Scheduler failed: {future.exception()}")
+            elif allocation := future.result():
+                self.best_allocation = allocation
+                # 触发任务提交
+                self.trigger_submit_task(self.smart_sch.sch_data.avail_task.allocations) # best_allocation just a batch result, not all
+            else:
+                logger.warning("Scheduler returned no allocation")
+        finally:
+            self.is_scheduling.clear()
+            
+    def shutdown_thread_pool(self):
+        """关闭线程池"""
+        if self.schedule_future and not self.schedule_future.done():
+            self.schedule_future.cancel()
+        self.scheduler_pool.shutdown(wait=True)
+        
     def wait_until_done(self, timeout: Optional[float] = None):
         """Wait until all out-going tasks have completed
 

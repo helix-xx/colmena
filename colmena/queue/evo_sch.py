@@ -76,7 +76,7 @@ def dataclass_to_dict(obj):
     else:
         return obj
 
-# TODO，打表每个任务在不同资源下的运行时间，减少重复预测开销。预测函数 lru cache？
+
 
 class agent_pilot:
     # 使用历史提交任务建模多项式拟合，判断那种任务适合作为下一次提交任务
@@ -118,7 +118,7 @@ class SmartScheduler:
     def __init__(self, methods, available_task_capacity, available_resources, sch_config= None):
         self.sch_data: Sch_data = Sch_data()
         # self.agent_pilot = agent_pilot(sch_data=self.sch_data, resources_rate=2, available_resources=available_resources, util_level=0.8)
-        self.sch_data.init_avail_task(available_task(methods), available_task_capacity)
+        self.sch_data.init_task_queue(available_task(methods), available_task_capacity)
         self.sch_data.init_hist_task(HistoricalData(methods))
         self.sch_data.init_task_time_predictor(methods, self.sch_data.historical_task_data.features)
         self.evo_sch: evosch2 = evosch2(resources=available_resources, at=self.sch_data.avail_task, hist_data=self.sch_data.historical_task_data, sch_data=self.sch_data)
@@ -137,6 +137,7 @@ class SmartScheduler:
         
         # lock
         self.sch_lock = threading.Lock()
+        self.available_task_lock = threading.Lock() # lock for available task to move task between available and scheduled
         
         # processes = len(self.node_resources)
         processes = 4
@@ -299,12 +300,14 @@ class SmartScheduler:
         """
         if method == "ga":
         # run evo sch
-            with self.sch_lock:
-                all_tasks = self.sch_data.avail_task.get_all()
-                all_tasks = copy.deepcopy(all_tasks)
-                best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
-                self.best_result = self.evo_sch.best_ind
-                return best_allocation
+            # with self.sch_lock: # 异步进行不需要加锁，每个调度算法都有自己的可调度任务
+            all_tasks = self.sch_data.avail_task.get_all()
+            self.sch_data.avail_task.move_allocation_to_scheduled(all_tasks) # 线程安全
+            # all_tasks = copy.deepcopy(all_tasks) # 逻辑上all_task没有被修改，不需要深拷贝
+            best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
+            self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
+            self.best_result = self.evo_sch.best_ind
+            return best_allocation
         elif method == "mrsa":
             with self.sch_lock:
                 self.sch_data.Task_time_predictor.train(self.sch_data.historical_task_data.historical_data)
@@ -425,7 +428,8 @@ def convert_to_mrsa_models(task_list, models, model_type, output_folder="fitune_
         # GPU部分
         if len(times_gpu) > 0:
             X_gpu = np.array([1/g for g in gpu_points[1:]]).reshape(-1, 1)
-            y_gpu = np.array(times_gpu) - s0 - s1/optimal_cpu
+            # y_gpu = np.array(times_gpu) - s0 - s1/optimal_cpu
+            y_gpu = np.array(times_gpu) - s0
             reg_gpu = LinearRegression()
             reg_gpu.fit(X_gpu, y_gpu)
             s2 = max(0, reg_gpu.coef_[0])  # GPU并行部分权重
@@ -457,7 +461,8 @@ def convert_to_mrsa_models(task_list, models, model_type, output_folder="fitune_
             if len(times_gpu) > 0:
                 X_gpu = np.log(gpu_points[1:]).reshape(-1, 1)
                 logger.info(f'GPU debug!! times_gpu: {times_gpu}, serial_time: {serial_time}, s1: {s1}, a1: {a1}')
-                y_gpu = np.log(np.array(times_gpu) - serial_time - s1/(optimal_cpu**a1))
+                # y_gpu = np.log(np.array(times_gpu) - serial_time - s1/(optimal_cpu**a1))
+                y_gpu = np.log(np.array(times_gpu) - serial_time)
                 reg_gpu = LinearRegression()
                 reg_gpu.fit(X_gpu, y_gpu)
                 s2 = np.exp(reg_gpu.intercept_)
@@ -714,9 +719,10 @@ class Sch_data(SingletonClass):
     def init_hist_task(self, historical_task_data):
         self.historical_task_data:HistoricalData = historical_task_data
 
-    def init_avail_task(self, avail_task_data, avail_task_cap):
+    def init_task_queue(self, avail_task_data, avail_task_cap):
         self.avail_task = avail_task_data
         self.avail_task_cap = avail_task_cap
+        
     
     def init_task_time_predictor(self, methods, features):
         self.Task_time_predictor = TaskTimePredictor(methods, features)
@@ -778,9 +784,26 @@ class available_task(SingletonClass):
 
     # def __init__(self,task_names: set[str], task_ids: dict[str, int], task_datas=None):
     # def __init__(self, task_ids: dict[str, list[str]] = None):
+    move_lock = threading.Lock()
     def __init__(self, task_methods: list[str]):
         self.task_ids = {method: [] for method in task_methods}
+        self.scheduled_task = {method: [] for method in task_methods}
+        self.allocations = []
 
+    def move_allocation_to_scheduled(self, allocation):
+        with self.move_lock:
+            self.allocations.extend(allocation)
+
+    def move_available_to_scheduled(self, all_tasks):
+        with self.move_lock:
+            for method,task_ids in all_tasks.items():
+                self.scheduled_task[method].extend(task_ids)
+                self.task_ids[method] = []
+                
+    def remove_task_from_allocation(self, task):
+        with self.move_lock:
+            self.allocations.remove(task)
+            
     def add_task_id(self, task_name: str, task_id: Union[str, list[str]]):
         # if task_name not in self.task_names:
         #     self.task_names.add(task_name)
@@ -797,24 +820,36 @@ class available_task(SingletonClass):
             all_tasks[task_name].append(i)
         return all_tasks
 
-    def remove_task_id(self, task_name: str, task_id: Union[str, list[str]]):
-        ## judge if there is task id
-        task_id = [task_id] if isinstance(task_id, str) else task_id
+    def remove_task_id(self, task_name: str, task_id: Union[str, list[str]], task_queue = 'available'):
+        if task_queue == 'available':
+            ## judge if there is task id
+            task_id = [task_id] if isinstance(task_id, str) else task_id
 
-        for i in task_id:
-            if i not in self.task_ids[task_name]:
-                print(f"task id {i} not in task name {task_name}")
-                # logging.warning(f"task id {task_id} not in task name {task_name}")
-                continue
-            self.task_ids[task_name].remove(i)
+            for i in task_id:
+                if i not in self.task_ids[task_name]:
+                    # print(f"task id {i} not in task name {task_name}")
+                    # logging.warning(f"task id {task_id} not in task name {task_name}")
+                    raise KeyError(f"task id {i} not in task name {task_name}")
+                    continue
+                self.task_ids[task_name].remove(i)
+                # if len(self.task_ids[task_name]) == 0:
+                #     self.task_ids.pop(task_name)
             # if len(self.task_ids[task_name]) == 0:
-            #     self.task_ids.pop(task_name)
-        # if len(self.task_ids[task_name]) == 0:
-        #     # print type
-        #     print(type(self.task_names))
-        #     print(self.task_names)
-        #     print(task_name)
-        #     self.task_names.remove(task_name)
+            #     # print type
+            #     print(type(self.task_names))
+            #     print(self.task_names)
+            #     print(task_name)
+            #     self.task_names.remove(task_name)
+        elif task_queue == 'scheduled':
+            task_id = [task_id] if isinstance(task_id, str) else task_id
+            for i in task_id:
+                if i not in self.scheduled_task[task_name]:
+                    # print(f"task id {i} not in task name {task_name}")
+                    # logging.warning(f"task id {task_id} not in task name {task_name}")
+                    raise KeyError(f"task id {i} not in task name {task_name}")
+                    continue
+                self.scheduled_task[task_name].remove(i)
+        
 
     def get_available_task_id(self, task_name):
         return self.task_ids.get(task_name)
@@ -949,7 +984,7 @@ class HistoricalData:
 class TaskTimePredictor:
     methods: List[str]
     features: Dict[str, List[str]]
-    model_type: Literal["random_forest", "polynomial"] = "polynomial"
+    model_type: Literal["random_forest", "polynomial"] = "random_forest"
     
     _models: Dict[str, Pipeline] = {}
     _feature_scalers: Dict[str, StandardScaler] = {}
@@ -960,7 +995,7 @@ class TaskTimePredictor:
     # random_forest_models: dict[str, RandomForestRegressor] = field(default_factory=dict)
     # polynomial_models: dict[str, Any] = field(default_factory=dict)
     
-    def __init__(self, methods, features, model_type: Literal["random_forest", "polynomial"] = "polynomial"):
+    def __init__(self, methods, features, model_type: Literal["random_forest", "polynomial"] = "random_forest"):
         """
         初始化任务时间预测器
         
@@ -1559,11 +1594,9 @@ class FCFSScheduler:
                     gpu_value:
                 ],
             )
-            # setattr(result_obj.resources, 'cpu', cpu_value)
-            # setattr(result_obj.resources, 'gpu', gpu_value)
+            
             result_obj.inputs[1]['gpu'] = gpu_value
             result_obj.inputs[1]['cpu'] = cpu_value
-            # self.at.remove_task_id(task_name=name, task_id=task_id)
     
     def recover_resources(self, result_obj:Result):
         with self.run_lock:
@@ -1690,7 +1723,7 @@ class evosch2:
             gpu_value = result_obj['resources']['gpu']
             self.resources['node']['cpu'] -= cpu_value
             self.resources['node']['gpu'] -= gpu_value
-            self.at.remove_task_id(task_name=result_obj['name'], task_id=result_obj['task_id'])
+            #TODO self.at.remove_task_id(task_name=result_obj['name'], task_id=result_obj['task_id']) 判断是移除可用任务还是已经调度任务
 
     def recover_resources(self, result_obj:Result):
         with self.run_lock:
@@ -1776,7 +1809,6 @@ class evosch2:
             all_tasks = {}
         task_queue = defaultdict(list)
         predict_running_seq = defaultdict(list)
-        # all_tasks = self.at.get_all()
         which_node = self.generate_node()
         for name, ids in all_tasks.items():
             avail = len(ids)
@@ -2757,5 +2789,5 @@ class evosch2:
             best_allocation.extend(best_ind.task_allocation_node[key])
 
         logger.info("GA running time: %s seconds" % (time.time() - start_time))
-
+        # self.at.move_allocation_to_scheduled(all_tasks, best_allocation) # should consider lock
         return best_allocation
