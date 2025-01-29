@@ -106,7 +106,7 @@ class ColmenaQueues:
         
         # scheduler_pool for trigger multi scheduling on different batch tasks
         import concurrent.futures
-        self.scheduler_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.scheduler_pool = concurrent.futures.ThreadPoolExecutor(max_workers=10)
         self.schedule_future = None
         # self.schedule_callback_lock = threading.Lock() # resources lock protect by queue_sch_lock
         self.is_scheduling = threading.Event()
@@ -246,6 +246,7 @@ class ColmenaQueues:
 
         if self.enable_smart_sch:
             with self.queue_sch_lock:
+                # recover resources
                 node = getattr(result_obj.resources, 'node')
                 gpu_value = result_obj.inputs[1]['gpu']
                 self.smart_sch.evo_sch.resources[node]['cpu'] += result_obj.inputs[1][
@@ -269,14 +270,15 @@ class ColmenaQueues:
                     f'Client received a {result_obj.method} result with topic {topic}, restore resources: remaining resources on node {node} are {self.smart_sch.evo_sch.resources[node]}'
                 )
                 self.enough_resources_flag.set()
-                # if self.best_allocation:
-                if self.smart_sch.sch_data.avail_task.allocations:
-                    logger.info("restore resources and trigger submit task")
-                    self.trigger_submit_task(self.smart_sch.sch_data.avail_task.allocations) # 释放资源了提交新的任务
-                else:
-                    self._add_task_flag.set()
-                    if self.smart_sch.sch_data.avail_task.get_total_nums() > 0:
-                        self.timer_trigger()
+
+            # after restore resources, trigger submit task
+            if self.smart_sch.sch_data.avail_task.allocations:
+                logger.info("restore resources and trigger submit task")
+                self.trigger_submit_task(self.smart_sch.sch_data.avail_task.allocations) # 释放资源了提交新的任务
+            else:
+                self._add_task_flag.set()
+                if self.smart_sch.sch_data.avail_task.get_total_nums() > 0:
+                    self.timer_trigger()
                         
         if self.enable_fcfs:
             with self.queue_sch_lock:
@@ -442,7 +444,7 @@ class ColmenaQueues:
             # logger.info(
             #     f'Client trigger submit task, available task length is {len(best_allocation)}'
             # )
-            logger.info(f'Client trigger submit task, task length is len{best_allocation}, allocation  is {best_allocation}')
+            logger.info(f'Client trigger submit task, task length is {len(best_allocation)}, allocation  is {best_allocation}')
 
             # 创建一个字典来保存每个节点的任务队列
             node_task_queues = {}
@@ -587,7 +589,7 @@ class ColmenaQueues:
                 )
                 # logger.info(f'result list length is {len(self.result_list)}')
                 logger.info(
-                    f'result list length is {self.smart_sch.sch_data.get_result_list_len()}'
+                    f'result list length is {self.smart_sch.sch_data.get_result_list_len()}, available task length is {self.smart_sch.sch_data.avail_task.get_total_nums()}, scheduled task length is {self.smart_sch.sch_data.avail_task.get_total_nums(task_type="scheduled")}'
                 )
                 # self.best_allocation = self.smart_sch.run_sch()
                 # self.trigger_submit_task(self.smart_sch.sch_data.avail_task.allocations)
@@ -600,7 +602,7 @@ class ColmenaQueues:
                 )
                 # logger.info(f'result list length is {len(self.result_list)}')
                 logger.info(
-                    f'result list length is {self.smart_sch.sch_data.get_result_list_len()}'
+                    f'result list length is {self.smart_sch.sch_data.get_result_list_len()}, available task length is {self.smart_sch.sch_data.avail_task.get_total_nums()}, scheduled task length is {self.smart_sch.sch_data.avail_task.get_total_nums(task_type="scheduled")}'
                 )
                 # self.best_allocation = self.smart_sch.run_sch()
                 # self.trigger_submit_task(self.smart_sch.sch_data.avail_task.allocations)

@@ -302,7 +302,7 @@ class SmartScheduler:
         # run evo sch
             # with self.sch_lock: # 异步进行不需要加锁，每个调度算法都有自己的可调度任务
             all_tasks = self.sch_data.avail_task.get_all()
-            self.sch_data.avail_task.move_allocation_to_scheduled(all_tasks) # 线程安全
+            self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
             # all_tasks = copy.deepcopy(all_tasks) # 逻辑上all_task没有被修改，不需要深拷贝
             best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
             self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
@@ -855,7 +855,7 @@ class available_task(SingletonClass):
         return self.task_ids.get(task_name)
 
     def get_all(self):
-        return self.task_ids
+        return copy.deepcopy(self.task_ids)
 
     def get_task_nums(self, all_tasks):
         result = {}
@@ -863,10 +863,13 @@ class available_task(SingletonClass):
             result[key] = len(value)
         return result
 
-    def get_total_nums(self, all_tasks = None):
-        if all_tasks == None:
-            all_tasks = self.get_all()
-        return sum(self.get_task_nums(all_tasks).values())
+    def get_total_nums(self, all_tasks = None, task_type = 'available'):
+        if task_type == 'available':
+            if all_tasks == None:
+                all_tasks = self.task_ids
+            return sum(self.get_task_nums(all_tasks).values())
+        elif task_type == 'scheduled':
+            return sum(self.get_task_nums(self.scheduled_task).values())
 
 
 class HistoricalData:
