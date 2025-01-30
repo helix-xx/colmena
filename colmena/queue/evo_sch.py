@@ -303,7 +303,6 @@ class SmartScheduler:
             # with self.sch_lock: # 异步进行不需要加锁，每个调度算法都有自己的可调度任务
             all_tasks = self.sch_data.avail_task.get_all()
             self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
-            # all_tasks = copy.deepcopy(all_tasks) # 逻辑上all_task没有被修改，不需要深拷贝
             best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
             self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
             self.best_result = self.evo_sch.best_ind
@@ -311,13 +310,16 @@ class SmartScheduler:
         elif method == "mrsa":
             with self.sch_lock:
                 self.sch_data.Task_time_predictor.train(self.sch_data.historical_task_data.historical_data)
-                best_allocation = self.run_mrsa_scheduler(model_type=model_type)
+                all_tasks = self.sch_data.avail_task.get_all()
+                self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
+                best_allocation = self.run_mrsa_scheduler(model_type=model_type,all_tasks=all_tasks)
+                self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
                 return best_allocation
 
-    def run_mrsa_scheduler(self, model_type="powSum"):
+    def run_mrsa_scheduler(self, model_type="powSum", all_tasks = None):
         """使用MRSA替代GA进行调度"""
         # 准备输入文件
-        folder_name = prepare_mrsa_input(self.sch_data, model_type)
+        folder_name = prepare_mrsa_input(self.sch_data, model_type, all_tasks=all_tasks)
         folder_name = "fitune_surrogate"
         
         # 获取资源配置
@@ -556,12 +558,17 @@ def convert_to_mrsa_models(task_list, models, model_type, output_folder="fitune_
             
     return conversion_stats
 
-def prepare_mrsa_input(sch_data, model_type="powSum", output_folder="fitune_surrogate"):
+def prepare_mrsa_input(sch_data, model_type="powSum", output_folder="fitune_surrogate", all_tasks=None):
     """准备MRSA调度器输入"""
     # 获取当前需要调度的任务
     tasks = []
-    for task_id, task in sch_data.sch_task_list.items():
-        tasks.append(task)
+    # for task_id, task in sch_data.sch_task_list.items():
+    #     tasks.append(task)
+    for method,ids in all_tasks.items():
+        for task_id in ids:
+            task = sch_data.sch_task_list.get(task_id)
+            if task:
+                tasks.append(task)
     
     # if sch_data.Task_time_predictor.model_type == "random_forest":
     #     models = sch_data.Task_time_predictor.random_forest_models
