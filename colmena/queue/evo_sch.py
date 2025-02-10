@@ -302,7 +302,7 @@ class SmartScheduler:
         # run evo sch
             # with self.sch_lock: # 异步进行不需要加锁，每个调度算法都有自己的可调度任务
             all_tasks = self.sch_data.avail_task.get_all()
-            self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
+            # self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
             # all_tasks = copy.deepcopy(all_tasks) # 逻辑上all_task没有被修改，不需要深拷贝
             best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
             self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
@@ -653,49 +653,164 @@ class individual:
     # static variable, unique id for each individual
     _next_id: ClassVar[int] = 0
     individual_id: int = -1
-    tasks_nums: Dict[str, int] = field(default_factory=dict)
+    tasks_nums: int = 0
     total_resources: dict = field(default_factory=dict)
     total_time: int = 0
     max_time: int = 0
     score: int = 0
 
-    ## optional
-    predict_run_seq: list = field(default_factory=list)  # [task,,,]
-    predict_run_seq_node: dict = field(
-        default_factory=dict
-    )  # {'node':{'task_id':task,,,},,,}
+    task_array: np.ndarray = field(default=None)
+    
+    _task_id_index: dict = field(default_factory=dict)
 
-    # allocation information
-    task_allocation: list[dict[str, int]] = field(
-        default_factory=list
-    )  # store all task
-    task_allocation_node: dict = field(default_factory=dict)  # store task on each node
-
-    # initialize individual id
     def __post_init__(self):
         if self.individual_id == -1:
             self.individual_id = individual._next_id
             individual._next_id += 1
+            
+
+        # 定义数组的数据类型
+        self.dtype = [
+            ('name', 'U20'), 
+            ('task_id', 'U40'),
+            ('cpu', 'i4'),
+            ('gpu', 'i4'),
+            ('node', 'U10'),
+            ('total_runtime', 'f8'),
+            ('start_time', 'f8'),
+            ('finish_time', 'f8')
+        ]
+
+        # 初始化空的task_array
+        if self.task_array is None:
+            self.task_array = np.zeros(self.tasks_nums, dtype=self.dtype)
+        
+        # 初始化任务索引
+        self.update_task_id_index()
+        
+        # 添加node_array的数据类型定义
+        self.node_dtype = [
+            ('node', 'U10'),
+            ('task_indices', 'i4', (100,))  # 假设每个节点最多100个任务
+        ]
+        
+        self.init_node_array()
+            
+    def init_node_array(self):
+        """从task_array初始化node_array"""
+        # 获取唯一的节点列表
+        nodes = np.unique(self.task_array['node'])
+        self.node_array = np.zeros(len(nodes), dtype=self.node_dtype)
+        
+        # 为每个节点创建任务索引数组
+        for i, node in enumerate(nodes):
+            # 找到分配给该节点的所有任务
+            node_mask = self.task_array['node'] == node
+            node_tasks = self.task_array[node_mask]
+            
+            # 设置节点名称
+            self.node_array[i]['node'] = node
+            
+            # 获取任务索引
+            task_indices = [self._task_id_index[task['task_id']] 
+                        for task in node_tasks]
+            
+            # 填充任务索引数组
+            indices_len = len(task_indices)
+            self.node_array[i]['task_indices'][:indices_len] = task_indices
+            self.node_array[i]['task_indices'][indices_len:] = -1  # 填充-1表示无效索引
+    
+    # @property
+    # def task_allocation_node(self):
+    #     """从node_array转换为字典格式"""
+    #     if not hasattr(self, 'node_array'):
+    #         return {}
+            
+    #     result = {}
+    #     for node_entry in self.node_array:
+    #         node = node_entry['node']
+    #         valid_indices = node_entry['task_indices'][node_entry['task_indices'] >= 0]
+    #         result[node] = [self.task_array[idx] for idx in valid_indices]
+            
+    #     return result
+    
+    # @task_allocation_node.setter 
+    # def task_allocation_node(self, value):
+    #     """从字典格式设置node_array"""
+    #     self._task_allocation_node = value  # 保存原始数据
+    #     if value:
+    #         self.init_node_array()
+        
+    @property
+    def task_allocation(self):
+        return [{
+            'name': t['name'],
+            'task_id': t['task_id'],
+            'resources': {'cpu': t['cpu'], 'gpu': t['gpu'], 'node': t['node']}, 
+            'total_runtime': t['total_runtime'],
+            'start_time': t['start_time'],
+            'finish_time': t['finish_time']
+        } for t in self.task_array]
+
+    @task_allocation.setter
+    def task_allocation(self, value):
+        """从字典列表格式设置task_array"""
+        self._task_allocation = value  # 保存原始数据
+        if not value:
+            self.task_array = np.zeros(self.tasks_nums, dtype=self.dtype)
+            return
+            
+        self.task_array = np.array(
+            [(t['name'], t['task_id'], 
+              t['resources']['cpu'], t['resources']['gpu'], 
+              t['resources']['node'], t.get('total_runtime', 0),
+              t.get('start_time', 0), t.get('finish_time', 0))
+             for t in value],
+            dtype=self.dtype
+        )
+        self.update_task_id_index()
+        
+    def task_array_shuffled(self):
+        """随机打乱任务顺序"""
+        np.random.shuffle(self.task_array)
+        self.update_task_id_index()
+        
+    def update_task_id_index(self):
+        self._task_id_index = {t['task_id']: i for i, t in enumerate(self.task_array)}
+    # get task index by task_id
+    def get_task_index(self, task_id):
+        return self._task_id_index.get(task_id, -1)
 
     # deepcopy individual
     def copy(self):
-        copied_individual = copy.deepcopy(self)
-        copied_individual.individual_id = individual._next_id
-        individual._next_id += 1
-        return copied_individual
+        """浅拷贝+关键字段深拷贝的优化版本"""
+        new_ind = individual(
+            tasks_nums=self.tasks_nums, # int不可变，浅拷贝即可
+            total_resources=self.total_resources,  # 字典引用（假设资源字典是只读的）
+            total_time=self.total_time,
+            max_time=self.max_time,
+            score=self.score,
+        )
+        new_ind.task_array = np.copy(self.task_array)
+        new_ind._task_id_index = self._task_id_index.copy()
+        
+        if hasattr(self, 'node_array'):
+            new_ind.node_array = np.copy(self.node_array)
+        
+        return new_ind
 
     # hash
-    def __hash__(self) -> int:
-        sorted_allocation = sorted(
-            self.task_allocation, key=lambda x: (x['name'], x['task_id'])
-        )
-        return hash(str(sorted_allocation))
+    # def __hash__(self) -> int:
+    #     sorted_allocation = sorted(
+    #         self.task_allocation, key=lambda x: (x['name'], x['task_id'])
+    #     )
+    #     return hash(str(sorted_allocation))
 
-    def get_task_resources(self, task_name, task_id):
-        for task in self.task_allocation:
-            if task['name'] == task_name and task['task_id'] == task_id:
-                return task['resources']
-        return None
+    # def get_task_resources(self, task_name, task_id):
+    #     for task in self.task_allocation:
+    #         if task['name'] == task_name and task['task_id'] == task_id:
+    #             return task['resources']
+    #     return None
 
     # convert to json
     def to_json(self):
@@ -789,6 +904,7 @@ class available_task(SingletonClass):
         self.task_ids = {method: [] for method in task_methods}
         self.scheduled_task = {method: [] for method in task_methods}
         self.allocations = []
+        self.task_allocation_node = {}
 
     def move_allocation_to_scheduled(self, allocation):
         with self.move_lock:
@@ -854,8 +970,11 @@ class available_task(SingletonClass):
     def get_available_task_id(self, task_name):
         return self.task_ids.get(task_name)
 
-    def get_all(self):
-        return copy.deepcopy(self.task_ids)
+    def get_all(self, task_type = 'available'):
+        if task_type == 'available':
+            return copy.deepcopy(self.task_ids)
+        elif task_type == 'scheduled':
+            return copy.deepcopy(self.scheduled_task)
 
     def get_task_nums(self, all_tasks):
         result = {}
@@ -958,30 +1077,6 @@ class HistoricalData:
                             #     break
                         feature_values[feature] = value
                     self.add_data(feature_values)
-                    
-    # def calculate_task_average_metrics(self):
-    #     """ Calculate the average resources and runtime for each method. """
-    #     # because no linear performance; should improved
-    #     averages = {}
-    #     for method, data in self.historical_data.items():
-    #         if not data:
-    #             continue  # Skip if there's no data for the method
-            
-    #         total_cpu = total_gpu = total_time = 0
-    #         count = len(data)
-
-    #         for entry in data:
-    #             total_cpu += entry.get("resources.cpu", 0)
-    #             total_gpu += entry.get("resources.gpu", 0)
-    #             total_time += entry.get("time_running", 0)
-
-    #         averages[method] = {
-    #             "average_cpu": total_cpu / count,
-    #             "average_gpu": total_gpu / count,
-    #             "average_time": total_time / count,
-    #         }
-
-    #     return averages
 
 
 class TaskTimePredictor:
@@ -995,9 +1090,6 @@ class TaskTimePredictor:
     # 缓存训练数据的统计信息
     _feature_stats: Dict[str, Dict[str, tuple]] = {}
     
-    # random_forest_models: dict[str, RandomForestRegressor] = field(default_factory=dict)
-    # polynomial_models: dict[str, Any] = field(default_factory=dict)
-    
     def __init__(self, methods, features, model_type: Literal["random_forest", "polynomial"] = "random_forest"):
         """
         初始化任务时间预测器
@@ -1010,24 +1102,12 @@ class TaskTimePredictor:
         self.model_type = model_type
         self.features = features
         self.methods = methods
-        # self.random_forest_models = {}
-        # self.polynomial_models = {}
-        
-        # 初始化模型
-
-        # for method in methods:
-        #     if model_type == "polynomial":
-        #         self.random_forest_models[method] = None
-        #     else:
-        #         self.polynomial_models[method] = None
-    
-        """初始化模型"""
-        # from sklearnex import patch_sklearn, unpatch_sklearn
-        # patch_sklearn()
         for method in self.methods:
             self._init_model(method)
             
     def _init_model(self, method: str):
+        from sklearnex import patch_sklearn, unpatch_sklearn
+        patch_sklearn()
         """为每个方法初始化模型pipeline"""
         if self.model_type == "random_forest":
             model = RandomForestRegressor(
@@ -1119,60 +1199,79 @@ class TaskTimePredictor:
         feature_tuple = tuple(features.values())
         
         return self._predict_single(method, feature_tuple)
-    
-    def _group_tasks_by_method(self, population: List, all_node: bool) -> Dict:
-        """按方法分组收集任务"""
-        tasks_by_method = {}
-        for ind in population:
-            if all_node:
-                task_allocation = []
-                for key in ind.task_allocation_node.keys():
-                    task_allocation.extend(ind.task_allocation_node[key])
-            else:
-                task_allocation = ind.task_allocation
 
-            for task in task_allocation:
-                method = task['name']
-                if method not in tasks_by_method:
-                    tasks_by_method[method] = []
-                tasks_by_method[method].append(task)
-                
-        return tasks_by_method
     
     def estimate_ga_population(self, population: List, sch_task_list: Dict, 
-                             all_node: bool = False) -> None:
+                            all_node: bool = False) -> None:
         """批量预测种群中所有任务的运行时间"""
-        # 按方法分组收集任务
-        tasks_by_method = self._group_tasks_by_method(population, all_node)
+        tasks_by_method = {}
         
-        # 批量预测每个方法的任务
-        for method, tasks in tasks_by_method.items():
+        # 首先收集所有方法和对应的任务数量
+        method_counts = {}
+        for ind in population:
+            unique_methods = np.unique(ind.task_array['name'])
+            for method in unique_methods:
+                method_mask = ind.task_array['name'] == method
+                if method not in method_counts:
+                    method_counts[method] = 0
+                method_counts[method] += np.sum(method_mask)
+        
+        # 为每个方法预分配numpy数组
+        for method, count in method_counts.items():
+            # 创建结构化数组，保持原始数据类型
+            tasks_by_method[method] = np.empty(count, dtype=ind.task_array.dtype)
+        
+        # 填充任务数据
+        current_indices = {method: 0 for method in method_counts.keys()}
+        
+        for ind in population:
+            unique_methods = np.unique(ind.task_array['name'])
+            for method in unique_methods:
+                method_mask = ind.task_array['name'] == method
+                method_tasks = ind.task_array[method_mask]
+                current_idx = current_indices[method]
+                next_idx = current_idx + len(method_tasks)
+                tasks_by_method[method][current_idx:next_idx] = method_tasks
+                current_indices[method] = next_idx
+        
+        # 进行预测
+        for method, task_array in tasks_by_method.items():
             if method not in self._models:
                 logger.info(f"Model not found for method {method}")
                 continue
-                
-            features_list = []
-            for task in tasks:
-                feature = self._extract_features_from_sch_task(
-                    sch_task_list[task['task_id']],
-                    task['resources']
-                )
-                features_list.append(feature)
-                
-            # 批量预测
-            # X = np.array(features_list)
-            X = pd.DataFrame(features_list)
-            X.drop(columns=['time_running', 'method', 'task_id'], inplace=True)
-            X = X.to_numpy()
+            
+            num_tasks = len(task_array)
+            X = np.empty((num_tasks, 3), dtype=np.float32)
+            
+            # 批量提取特征
+            for i in range(num_tasks):
+                task = task_array[i]
+                sch_task = sch_task_list[task['task_id']]
+                msg_input = sch_task.get('message_sizes', {}).get('inputs', 0.0)
+                X[i] = [msg_input, task['cpu'], task['gpu']]
+            
             try:
                 predictions = self._models[method].predict(X)
                 predictions = np.expm1(predictions)
                 
-                # 更新任务的预测运行时间
-                for task, runtime in zip(tasks, predictions):
-                    task['total_runtime'] = runtime
+                # 创建任务ID到预测结果的映射
+                prediction_map = dict(zip(task_array['task_id'], predictions))
+                
+                # 更新每个个体的运行时间
+                for ind in population:
+                    # 找到该方法的所有任务
+                    method_mask = ind.task_array['name'] == method
+                    if np.any(method_mask):
+                        # 获取需要更新的任务ID
+                        task_ids = ind.task_array[method_mask]['task_id']
+                        # 批量更新运行时间
+                        for task_id in task_ids:
+                            idx = ind._task_id_index[task_id]
+                            ind.task_array[idx]['total_runtime'] = prediction_map[task_id]
+                    
             except Exception as e:
-                logger.error(f"Batch prediction failed for method {method}: {str(e)}")
+                logger.error(f"Batch预测失败: {str(e)}")
+                logger.exception(e)  # 添加详细的错误跟踪
                 
     def _extract_features(self, task: Dict) -> Dict:
         """提取任务特征"""
@@ -1228,307 +1327,7 @@ class TaskTimePredictor:
         predictor._models = saved_dict['models']
         predictor._feature_stats = saved_dict['feature_stats']
         return predictor
-    # def train(self, train_data):
-    #     """统一的训练入口"""
-    #     if self.model_type == "random_forest":
-    #         self.random_forest_train(train_data)
-    #     elif self.model_type == "polynomial":
-    #         self.polynomial_train(train_data)
 
-    # def random_forest_train(self, train_data: Dict[str, List[Dict]]):
-    #     for method, data in train_data.items():
-    #         df = DataFrame(data)
-    #         df.dropna(inplace=True)
-            
-    #         if len(data) < 5:
-    #             continue
-
-    #         x = df.drop(columns=['time_running', 'method', 'task_id'])
-    #         y = df['time_running']
-            
-    #         y = np.log1p(y)
-            
-    #         rf_model = Pipeline([
-    #             ('scaler', StandardScaler()),
-    #             ('rf', RandomForestRegressor(
-    #                 n_estimators=100,
-    #                 max_depth=None,
-    #                 min_samples_split=2,
-    #                 min_samples_leaf=1,
-    #                 # max_features='auto',
-    #                 n_jobs=-1,
-    #                 random_state=42
-    #             ))
-    #         ])
-            
-    #         rf_model.fit(x, y)
-    #         self.random_forest_models[method] = rf_model
-
-    # def polynomial_train(self, train_data):
-    #     for method, data in train_data.items():
-    #         df = DataFrame(data)
-    #         df.dropna(inplace=True)
-    #         if len(data) < 5:
-    #             continue
-
-    #         x = df.drop(columns=['time_running', 'method', 'task_id'])
-    #         y = df['time_running']
-
-    #         poly_model = Pipeline([
-    #             ('scaler', StandardScaler()),  # 添加标准化步骤
-    #             ('poly_features', PolynomialFeatures(degree=3)),
-    #             ('linear_model', LinearRegression()),
-    #         ])
-            
-    #         y = np.log1p(y)
-    #         poly_model.fit(x, y)
-    #         self.polynomial_models[method] = poly_model
-
-    # @lru_cache(maxsize=1024)
-    # def estimate_time(self, task):
-    #     """
-    #     预测单个任务的运行时间
-        
-    #     param:
-    #     task: 通过get_feature_from_task获取的任务特征
-    #     """
-    #     method = task['method']
-    #     X = DataFrame([task]).drop(columns=['time_running', 'method', 'task_id'])
-        
-    #     if self.model_type == "random_forest":
-    #         model = self.random_forest_models.get(method)
-    #         if model is None:
-    #             return None
-    #         prediction = model.predict(X)[0]
-    #     elif self.model_type == "polynomial":
-    #         model = self.polynomial_models.get(method)
-    #         if model is None:
-    #             return None
-    #         prediction = model.predict(X)[0]
-            
-    #     return np.expm1(prediction)
-
-    # def extract_feature_from_task(self, task: Result, result: Result):
-    #     task_features = {}
-    #     for feature in self.features['default']:
-    #         value = result
-    #         for key in feature.split('.'):
-    #             if isinstance(value, dict):
-    #                 value = value.get(key)
-    #             else:
-    #                 value = getattr(value, key)
-    #         if key in task['resources']:
-    #             value = task['resources'][key]
-    #         task_features[feature] = value
-    #     return task_features
-
-    # def estimate_ga_population(self, population, sch_task_list, all_node=False):
-    #     tasks_by_model = {}
-    #     for ind in population:
-    #         if all_node:
-    #             task_allocation = []
-    #             for key in ind.task_allocation_node.keys():
-    #                 task_allocation.extend(ind.task_allocation_node[key])
-    #         else:
-    #             task_allocation = ind.task_allocation
-
-    #         for task in task_allocation:
-    #             model_name = task['name']
-    #             if model_name not in tasks_by_model:
-    #                 tasks_by_model[model_name] = []
-    #             tasks_by_model[model_name].append(task)
-
-    #     for model_name, tasks in tasks_by_model.items():
-    #         if self.model_type == "random_forest":
-    #             model = self.random_forest_models.get(model_name)
-    #         elif self.model_type == "polynomial":
-    #             model = self.polynomial_models.get(model_name)
-                
-    #         if model is None:
-    #             continue
-
-    #         feature_values = []
-    #         for task in tasks:
-    #             feature = copy.deepcopy(sch_task_list[task['task_id']])
-    #             feature['resources.cpu'] = task['resources']['cpu']
-    #             feature['resources.gpu'] = task['resources']['gpu']
-    #             feature_values.append(feature)
-
-    #         X = DataFrame(feature_values).drop(columns=['time_running', 'method', 'task_id'])
-    #         predictions = model.predict(X)
-    #         predictions = np.expm1(predictions)
-            
-    #         for task, runtime in zip(tasks, predictions):
-    #             task['total_runtime'] = runtime
-
-
-# @dataclass
-# class historical_data(
-#     SingletonClass
-# ):  # change to sch data, contain all data and transfer to child class in queue / thinker
-#     features = [
-#         "method",
-#         "message_sizes.inputs",
-#         # "worker_info.hostname", # for multinode executor # need vectorize for training
-#         "resources.cpu",
-#         "resources.gpu",
-#         # "resources.thread",
-#         "time_running",
-#     ]
-
-#     def __init__(self, methods: Collection[str], queue=None):
-#         # submit history and complete history for cal the potential improvement
-#         self.methods = methods
-#         self.submit_task_seq = []
-#         self.complete_task_seq = []
-#         ## total submit / total complete
-#         self.trigger_info = []
-
-#         # his data for predict time runnint
-#         self.historical_data = {}
-#         self.random_forest_model = {}
-#         from sklearnex import patch_sklearn, unpatch_sklearn
-
-#         patch_sklearn()
-#         for method in self.methods:
-#             self.historical_data[method] = []
-#             self.random_forest_model[method] = RandomForestRegressor(
-#                 n_estimators=100, random_state=42, n_jobs=-1
-#             )
-
-#         self.queue = queue
-
-#     def add_data(self, feature_values: dict[str, Any]):
-#         method = feature_values['method']
-#         # if method not in self.historical_data:
-#         #     self.historical_data[method] = []
-#         #     self.random_forest_model[method] = RandomForestRegressor(n_estimators=100, random_state=42)
-#         if method not in self.historical_data:
-#             logger.warning(f"method {method} not in historical data")
-#         self.historical_data[method].append(feature_values)
-
-#     def get_features_from_result_object(self, result: Result):
-#         feature_values = {}
-#         for feature in self.features:
-#             value = result
-#             for key in feature.split('.'):
-#                 if isinstance(value, dict):
-#                     value = value.get(key)
-#                     break
-#                 else:
-#                     value = getattr(value, key)
-#             if feature == 'resources.gpu':
-#                 value = (
-#                     len(value) if isinstance(value, list) else 0
-#                 )  # 如果是list，则取长度，否则默认为0
-#                 # if value is None:
-#                 #     break
-#             feature_values[feature] = value
-#         self.add_data(feature_values)
-
-#     def get_features_from_his_json(self, his_json: Union[str, list[str]]):
-#         for path in his_json:
-#             with open(path, 'r') as f:
-#                 for line in f:
-#                     json_line = json.loads(line)
-#                     feature_values = {}
-#                     for feature in self.features:
-#                         value = json_line
-#                         for key in feature.split('.'):
-#                             value = value.get(key)
-#                             # if value is None:
-#                             #     break
-#                         feature_values[feature] = value
-#                     self.add_data(feature_values)
-
-#     def random_forest_train(self):
-#         for method in self.historical_data:
-#             logger.info(f"train:{method} model")
-#             data = self.historical_data[method]
-#             df = DataFrame(data)
-#             df.dropna(inplace=True)
-#             if len(data) < 5:
-#                 continue
-#             model = self.random_forest_model[method]
-
-#             X = []
-#             y = []
-#             for feature_values in data:
-#                 X = df.drop(columns=['time_running', 'method', 'task_id'])
-#                 y = df['time_running']
-#             # X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=1.0, random_state=42)
-#             model.fit(X, y)
-#             logger.info(
-#                 f"method: {method}, random forest regressor score: {model.score(X, y)}"
-#             )
-#             # print(f"method: {method}, random forest regressor score: {model.score(X, y)}")
-
-#     def estimate_time(self, task):
-#         # use allocate resource to estimate running time
-#         method = task['name']
-#         result: Result = self.queue.result_list[task['task_id']]
-#         model = self.random_forest_model[method]
-#         feature_values = {}
-#         for feature in self.features:
-#             value = result
-#             for key in feature.split('.'):
-#                 if isinstance(value, dict):
-#                     value = value.get(key)
-#                     break
-#                 else:
-#                     value = getattr(value, key)
-#             if key in task['resources']:
-#                 value = task['resources'][key]
-#             feature_values[feature] = value
-#         X = DataFrame([feature_values]).drop(columns=['time_running', 'method', 'task_id'])
-#         return model.predict(X)[0]
-
-#     def estimate_batch(self, population, all_node=False):
-#         def extract_feature_values(task, result):
-#             feature_values = {}
-#             for feature in self.features:
-#                 value = result
-#                 for key in feature.split('.'):
-#                     if isinstance(value, dict):
-#                         value = value.get(key)
-#                         break
-#                     else:
-#                         value = getattr(value, key)
-#                 if key in task['resources']:
-#                     value = task['resources'][key]
-#                 feature_values[feature] = value
-#             return feature_values
-
-#         tasks_by_model = {}  # 以模型为键，将任务分组存储
-#         for ind in population:
-#             if all_node:
-#                 task_allocation = []
-#                 for key in ind.task_allocation_node.keys():
-#                     task_allocation.extend(ind.task_allocation_node[key])
-#             else:
-#                 task_allocation = ind.task_allocation
-
-#             for task in task_allocation:
-#                 model_name = task['name']
-#                 if model_name not in tasks_by_model:
-#                     tasks_by_model[model_name] = []
-#                 tasks_by_model[model_name].append(task)
-
-#         for model_name, tasks in tasks_by_model.items():
-#             model = self.random_forest_model[model_name]  # 获取对应的模型
-
-#             feature_values = []
-#             for task in tasks:
-#                 result: Result = self.queue.result_list[task['task_id']]
-#                 feature_dict = extract_feature_values(task, result)
-#                 feature_values.append(feature_dict)
-
-#             X = DataFrame(feature_values).drop(columns=['time_running', 'method', 'task_id'])
-#             predictions = model.predict(X)
-
-#             for task, runtime in zip(tasks, predictions):
-#                 task['total_runtime'] = runtime
-#                 # logger.info(f"Predicted runtime for task {task['task_id']}: {runtime}")
 
 
 class FCFSScheduler:
@@ -1762,294 +1561,271 @@ class evosch2:
                     aggregated_resources[key] = value
         return aggregated_resources
 
-    def ind_init_task_allocation(self):
-        """specify task_allocation_node formate = {node: [task,,,],,,}
-
-        Returns:
-            _type_: _description_
-        """
-        task_allocation_node = {}
-        for node in self.node_resources.keys():
-            task_allocation_node[node] = []
-        return task_allocation_node
-
-    def check_pending_task_on_node(self, task_allocation):
-        if task_allocation is None:
-            return True  # no ind means no pending task
-
-        # check if there is pending task on node, no pending task trigger evosch
-        pending_queue = self.ind_init_task_allocation()
-        for task in task_allocation:
-            node = task['resources']['node']
-            pending_queue[node].append(task)
-        for node in pending_queue:
-            if len(pending_queue[node]) == 0:  # no pending task on node
-                return True
-
-        return False  # all node have task pending
-
-    def get_piority(self):
-        pass
-
-    def cpu_choice(self):
-        pass
-
-    def gpu_choice(self):
-        pass
-
-    def detect_submit_sequence(self):
-        # detect submit task sequence to choose proper task to run
-        pass
 
     def detect_no_his_task(self, all_tasks, total_nums=5):
-        '''
-        detect if there is task not in historical data
-        without historical data, estimate method cannot work, we need run them first, and record the historical data to train the model
-        return the individual contain no record task
-        # get all node resource or get user predefine resource
-        '''
-        if all_tasks == None:
-            all_tasks = {}
-        task_queue = defaultdict(list)
-        predict_running_seq = defaultdict(list)
-        which_node = self.generate_node()
+        '''检测没有历史数据的任务并生成初始运行样本'''
+        if all_tasks is None:
+            return None
+            
+        # 计算需要采样的任务总数
+        total_sample_tasks = 0
         for name, ids in all_tasks.items():
             avail = len(ids)
-            hist = len(
-                # self.hist_data.historical_data[name]
-                self.sch_data.historical_task_data.historical_data[name]
-            )  # we dont have historical data for estimate
-            if (hist < total_nums) and (avail > 0):
-                # cpu choices
-                # predefine_cpu = getattr(
-                #     # self.hist_data.queue.result_list[ids[0]].resources, 'cpu'
-                #     self.sch_data.result_list[ids[0]].resources, 'cpu'
-                # )
-                # logger.info(f"predefine cpu: {predefine_cpu}")
+            if avail == 0:
+                continue
+                
+            hist = len(self.sch_data.historical_task_data.historical_data[name])
+            if hist < total_nums:
+                sample_nums = min(total_nums - hist, avail)
+                total_sample_tasks += sample_nums
+        
+        if total_sample_tasks == 0:
+            return None
+            
+        # 创建individual实例
+        ind = individual(tasks_nums=total_sample_tasks, total_resources=self.node_resources)
+        which_node = self.generate_node()
+        task_idx = 0
+        
+        for name, ids in all_tasks.items():
+            avail = len(ids)
+            if avail == 0:
+                continue
+                
+            hist = len(self.sch_data.historical_task_data.historical_data[name])
+            if hist < total_nums:
+                # 确定需要采样的数量
+                sample_nums = min(total_nums - hist, avail)
+                
+                # 获取预定义资源
                 predefine_cpu = self.sch_data.sch_task_list[ids[0]]['resources.cpu']
-                # logger.info(f"predefine cpu: {predefine_cpu}")
+                predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
+                
+                # CPU采样范围
                 cpu_lower_bound = min(2, predefine_cpu // 2)
-                cpu_upper_bound = max(
-                    self.node_resources.values(), key=lambda x: x['cpu']
-                )[
-                    'cpu'
-                ]  # node max cpu value
-                sample_nums = min((total_nums - hist), avail)
-                choices = np.linspace(
+                cpu_upper_bound = max(res['cpu'] for res in self.node_resources.values())
+                cpu_choices = np.linspace(
                     cpu_lower_bound,
                     cpu_upper_bound,
                     num=sample_nums,
                     endpoint=True,
-                    retstep=False,
-                    dtype=int,
+                    dtype=int
                 )
-
-                # gpu choices
-                # predefine_gpu = getattr(
-                #     # self.hist_data.queue.result_list[ids[0]].resources, 'gpu'
-                #     self.sch_data.result_list[ids[0]].resources, 'gpu'
-                # )
-                # logger.info(f"predefine gpu: {predefine_gpu}")
-                predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
-                # logger.info(f"predefine gpu: {predefine_gpu}")
-                if predefine_gpu == 0:  # this task do not use gpu
-                    gpu_choices = np.linspace(
-                        0, 0, num=sample_nums, endpoint=True, retstep=False, dtype=int
-                    )
+                
+                # GPU采样范围
+                if predefine_gpu == 0:
+                    gpu_choices = np.zeros(sample_nums, dtype=int)
                 else:
                     gpu_lower_bound = 1
-                    gpu_upper_bound = max(
-                        self.node_resources.values(), key=lambda x: x['gpu']
-                    )['gpu']
+                    gpu_upper_bound = max(res['gpu'] for res in self.node_resources.values())
                     gpu_choices = np.linspace(
                         gpu_lower_bound,
                         gpu_upper_bound,
                         num=sample_nums,
                         endpoint=True,
-                        retstep=False,
-                        dtype=int,
+                        dtype=int
                     )
-                # if len(self.hist_data.historical_data[name])<5: # no data for train
-                for i in range(len(choices)):
-                    cpu = int(choices[i])
-                    gpu = int(gpu_choices[i])
+                
+                # 填充task_array
+                for i in range(sample_nums):
                     node = next(which_node)
-                    new_task = {
-                        "name": name,
-                        "task_id": ids[i],
-                        "resources": {"cpu": cpu, "gpu": gpu, "node": node},
-                        "total_runtime": 1,
-                    }
-                    task_queue[node].append(new_task)
-                    predict_running_seq[node].append(
-                        {
-                            'name': name,
-                            'task_id': ids[i],
-                            'start_time': None,
-                            'finish_time': None,
-                            'total_runtime': 1,  # 无意义值
-                            'resources': {'cpu': cpu, 'gpu': gpu, "node": node},
-                        }
+                    ind.task_array[task_idx] = (
+                        name,           # name
+                        ids[i],         # task_id
+                        cpu_choices[i], # cpu
+                        gpu_choices[i], # gpu
+                        node,           # node
+                        1.0,           # total_runtime (默认值)
+                        0.0,           # start_time
+                        0.0            # finish_time
                     )
-        ind = individual(
-            tasks_nums=self.get_dict_list_nums(task_queue),
-            total_resources=self.node_resources,
-        )
-        ind.task_allocation_node = task_queue
-        task_allocation = []
-        for key in task_queue.keys():
-            task_allocation.extend(task_queue[key])
-        ind.task_allocation = task_allocation
-        ind.predict_run_seq_node = predict_running_seq
+                    task_idx += 1
+        
+        # 更新索引和node_array
+        ind.update_task_id_index()
+        
+        # 初始化node_array
+        nodes = set(ind.task_array['node'])
+        ind.node_array = np.zeros(len(nodes), dtype=ind.node_dtype)
+        
+        for i, node in enumerate(nodes):
+            ind.node_array[i]['node'] = node
+            node_mask = ind.task_array['node'] == node
+            task_indices = np.where(node_mask)[0]
+            ind.node_array[i]['task_indices'][:len(task_indices)] = task_indices
+            ind.node_array[i]['task_indices'][len(task_indices):] = -1
+        
         return ind
 
-    def calc_time(self, tasks, node):
-        total_cpu_time = 0
-        total_gpu_time = 0
-        for task in tasks:
-            total_cpu_time += task['resources']['cpu'] * task['total_runtime']
-            total_gpu_time += task['resources']['gpu'] * task['total_runtime']
+    def calc_time(self, tasks: np.ndarray) -> tuple[float, float]:
+        """计算任务的CPU和GPU总时间
+        
+        Args:
+            tasks: 任务数组
+        
+        Returns:
+            tuple: (CPU总时间, GPU总时间)
+        """
+        total_cpu_time = np.sum(tasks['cpu'] * tasks['total_runtime'])
+        total_gpu_time = np.sum(tasks['gpu'] * tasks['total_runtime'])
         return total_cpu_time, total_gpu_time
 
-    def calc_utilization(self, ind):
-        total_cpu_time = defaultdict(int)
-        total_gpu_time = defaultdict(int)
-        completion_time = defaultdict(int)
+    def calc_utilization(self, ind: individual) -> tuple[dict, dict, dict]:
+        """计算各节点的资源利用情况
+        
+        Args:
+            ind: individual对象
+        
+        Returns:
+            tuple: (CPU时间字典, GPU时间字典, 完成时间字典)
+        """
+        total_cpu_time = defaultdict(float)
+        total_gpu_time = defaultdict(float)
+        completion_time = defaultdict(float)
+        
         for node in self.node_resources.keys():
-            total_cpu_time[node], total_gpu_time[node] = self.calc_time(
-                ind.task_allocation_node[node], node
-            )
-            completion_time[node], running_swq = (
-                self.calculate_completion_time_record_with_running_task(
-                    self.node_resources[node],
-                    self.running_task_node[node],
-                    ind.task_allocation_node[node],
-                )
+            node_mask = ind.task_array['node'] == node
+            node_tasks = ind.task_array[node_mask]
+            
+            total_cpu_time[node], total_gpu_time[node] = self.calc_time(node_tasks)
+            
+            completion_time[node], _, _ = self.calculate_completion_time_record_with_running_task(
+                self.node_resources[node],
+                self.running_task_node[node],
+                node_tasks,
+                ind
             )
 
         return total_cpu_time, total_gpu_time, completion_time
 
-    def load_balance(self, ind):
-        # 不考虑通信迁移成本，只考虑每个节点的完成时间
-        # TODO 考虑迁移节点后 可能任务资源会超过节点限制。
+    def load_balance(self, ind: individual) -> None:
+        """平衡各节点的负载
+        
+        Args:
+            ind: individual对象
+        """
         if not isinstance(ind, individual):
             raise ValueError("load_balance input is not individual")
 
-        # TODO consider resources constraint in each node, prevent resources not enough
         total_cpu_time, total_gpu_time, completion_time = self.calc_utilization(ind)
         diff_cur = max(completion_time.values()) - min(completion_time.values())
         diff_pre = max(completion_time.values())
         max_pre = max(completion_time.values())
         max_node = max(completion_time, key=completion_time.get)
         min_node = min(completion_time, key=completion_time.get)
+
         while diff_cur < diff_pre:
             max_node = max(completion_time, key=completion_time.get)
             min_node = min(completion_time, key=completion_time.get)
 
-            best_task = None
+            best_task_idx = None
             best_diff = float('inf')
 
-            for task in ind.task_allocation_node[max_node]:
-                used_cpu_time_max = (
-                    total_cpu_time[max_node]
-                    - task['resources']['cpu'] * task['total_runtime']
-                )
+            # 获取最大负载节点的任务
+            max_node_mask = ind.task_array['node'] == max_node
+            max_node_tasks = ind.task_array[max_node_mask]
+            
+            # 遍历最大负载节点的每个任务
+            for i, task in enumerate(max_node_tasks):
+                # 计算移动任务后的资源使用情况
+                used_cpu_time_max = total_cpu_time[max_node] - task['cpu'] * task['total_runtime']
                 total_cpu_area_max = completion_time[max_node] * self.resources_evo[max_node]['cpu']
 
-                temp_gpu_time_max = (
-                    total_gpu_time[max_node]
-                    - task['resources']['gpu'] * task['total_runtime']
-                )
+                temp_gpu_time_max = total_gpu_time[max_node] - task['gpu'] * task['total_runtime']
                 total_gpu_area_max = completion_time[max_node] * self.resources_evo[max_node]['gpu']
 
-                temp_cpu_time_min = (
-                    total_cpu_time[min_node]
-                    + task['resources']['cpu'] * task['total_runtime']
-                )
+                temp_cpu_time_min = total_cpu_time[min_node] + task['cpu'] * task['total_runtime']
                 total_cpu_area_min = completion_time[min_node] * self.resources_evo[min_node]['cpu']
 
-                temp_gpu_time_min = (
-                    total_gpu_time[min_node]
-                    + task['resources']['gpu'] * task['total_runtime']
-                ) 
+                temp_gpu_time_min = total_gpu_time[min_node] + task['gpu'] * task['total_runtime']
                 total_gpu_area_min = completion_time[min_node] * self.resources_evo[min_node]['gpu']
 
-                # cpu 和 gpu 时间差的绝对值， 存疑； 应该修改为最能减少completion time； 是否应该再用一次GA算法？
-                # ga on node
-                # calculate completion time, or extra metrics
-                # temp_diff_max = abs(temp_cpu_time_max - temp_gpu_time_max)
-                # temp_diff_min = abs(temp_cpu_time_min - temp_gpu_time_min)
-                # combined_diff = temp_diff_max + temp_diff_min
                 temp_max_diff = abs(total_cpu_area_max - used_cpu_time_max) + abs(total_gpu_area_max - temp_gpu_time_max)
                 temp_min_diff = abs(total_cpu_area_min - temp_cpu_time_min) + abs(total_gpu_area_min - temp_gpu_time_min)
                 combined_diff = temp_max_diff + temp_min_diff
 
                 if combined_diff < best_diff:
                     best_diff = combined_diff
-                    best_task = task
+                    best_task_idx = i
 
-            if best_task:
-                ind.task_allocation_node[max_node].remove(best_task)
-                ind.task_allocation_node[min_node].append(best_task)
-                total_cpu_time[max_node] -= (
-                    best_task['resources']['cpu'] * best_task['total_runtime']
+            if best_task_idx is not None:
+                # 更新任务节点分配
+                task_to_move = max_node_tasks[best_task_idx]
+                
+                # 更新task_array中的节点信息
+                task_id = task_to_move['task_id']
+                ind_idx = ind.get_task_index(task_id)
+                ind.task_array[ind_idx]['node'] = min_node
+                
+                # 更新资源使用时间
+                total_cpu_time[max_node] -= task_to_move['cpu'] * task_to_move['total_runtime']
+                total_gpu_time[max_node] -= task_to_move['gpu'] * task_to_move['total_runtime']
+                total_cpu_time[min_node] += task_to_move['cpu'] * task_to_move['total_runtime']
+                total_gpu_time[min_node] += task_to_move['gpu'] * task_to_move['total_runtime']
+
+                # 重新计算完成时间
+                max_node_mask = ind.task_array['node'] == max_node
+                min_node_mask = ind.task_array['node'] == min_node
+                
+                completion_time[max_node], _, _ = self.calculate_completion_time_record_with_running_task(
+                    self.node_resources[max_node],
+                    self.running_task_node[max_node],
+                    ind.task_array[max_node_mask],
+                    ind
                 )
-                total_gpu_time[max_node] -= (
-                    best_task['resources']['gpu'] * best_task['total_runtime']
+                
+                completion_time[min_node], _, _ = self.calculate_completion_time_record_with_running_task(
+                    self.node_resources[min_node],
+                    self.running_task_node[min_node],
+                    ind.task_array[min_node_mask],
+                    ind
                 )
-                total_cpu_time[min_node] += (
-                    best_task['resources']['cpu'] * best_task['total_runtime']
-                )
-                total_gpu_time[min_node] += (
-                    best_task['resources']['gpu'] * best_task['total_runtime']
-                )
-                best_task['resources']['node'] = min_node
-                completion_time[max_node], _ = (
-                    self.calculate_completion_time_record_with_running_task(
-                        self.node_resources[max_node],
-                        self.running_task_node[max_node],
-                        ind.task_allocation_node[max_node],
-                    )
-                )
-                completion_time[min_node], _ = (
-                    self.calculate_completion_time_record_with_running_task(
-                        self.node_resources[min_node],
-                        self.running_task_node[min_node],
-                        ind.task_allocation_node[min_node],
-                    )
-                )
+
                 diff_pre = diff_cur
                 max_now = max(completion_time.values())
                 diff_cur = max(completion_time.values()) - min(completion_time.values())
+                
+                if max_now > max_pre:
+                    break
+                else:
+                    max_pre = max_now
             else:
                 break
+            
+        ind.init_node_array()
 
-            if max_now > max_pre:
-                # if the max completion time increase, break
-                break
-            else:
-                max_pre = max_now
-
-    def load_balance_by_area():
-        pass
 
     def calculate_completion_time_record_with_running_task(
-        self, resources, running_task: list, task_allocation
-    ):
-        current_time = time.time()  # time line move
-        record = current_time  # start time
-        ongoing_task = []  # tmp use here
-        running_seq = (
-            {}
-        )  # log seq and time information, supply for evo to choose which task to opt or mutate
-        # available_resources = {node: {'cpu': res['cpu'], 'gpu': res['gpu']} for node, res in self.node_resources.items()}
+        self, 
+        resources: dict, 
+        running_tasks: list, 
+        task_array: np.ndarray,
+        ind: individual
+    ) -> tuple[float, float, float]:
+        """计算完成时间、资源使用面积和总运行时间，并更新individual中的任务时间
+        
+        Args:
+            resources: 节点资源配置(需要深拷贝)
+            running_tasks: 正在运行的任务列表
+            task_array: 按执行顺序排列的任务数组
+            ind: individual对象，用于更新任务时间信息
+        
+        Returns:
+            tuple: (完成时间, 资源使用面积, 总运行时间)
+        """
+        current_time = time.time()
+        start_time = current_time
+        ongoing_tasks = []
         available_resources = copy.deepcopy(resources)
-
-        # add running task
-        if running_task:
-            for task in running_task:
+        
+        # 记录资源使用情况
+        resource_usage = []
+        
+        # 添加运行中的任务
+        if running_tasks:
+            for task in running_tasks:
                 heapq.heappush(
-                    ongoing_task,
+                    ongoing_tasks,
                     (
                         task['finish_time'],
                         task['resources']['cpu'],
@@ -2057,143 +1833,152 @@ class evosch2:
                         task['task_id'],
                         task['name'],
                         task['resources']['node'],
-                    ),
+                    )
                 )
                 available_resources['cpu'] -= task['resources']['cpu']
                 available_resources['gpu'] -= task['resources']['gpu']
-                running_seq[task['task_id']] = {
-                    'name': task['name'],
-                    'task_id': task['task_id'],
-                    'start_time': task['start_time'],
-                    'finish_time': task['finish_time'],  # refresh at finish
-                    'total_runtime': task['total_runtime'],  # refresh at finish
-                    'resources': task['resources'],
-                }
+            
+            resource_usage.append((
+                current_time,
+                resources['cpu'] - available_resources['cpu'],
+                resources['gpu'] - available_resources['gpu']
+            ))
 
-        for task in task_allocation:
-            # start a new task
-            node = task['resources']['node']
-            required_cpu = task['resources']['cpu']
-            required_gpu = task['resources']['gpu']
-
-            # before add each task, check if any task completed
-            while ongoing_task and ongoing_task[0][0] <= current_time:
-                _, cpus, gpus, finished_task_id, task_name, task_node = heapq.heappop(
-                    ongoing_task
-                )
+        # 按数组顺序处理任务
+        for task in task_array:
+            required_cpu = task['cpu']
+            required_gpu = task['gpu']
+            task_id = task['task_id']
+            
+            # 检查已完成的任务并释放资源
+            while ongoing_tasks and ongoing_tasks[0][0] <= current_time:
+                finish_time, cpus, gpus, *_ = heapq.heappop(ongoing_tasks)
                 available_resources['cpu'] += cpus
                 available_resources['gpu'] += gpus
-                task_record = running_seq[finished_task_id]
-                task_record['finish_time'] = current_time
-                task_record['total_runtime'] = current_time - task_record['start_time']
+                resource_usage.append((
+                    finish_time,
+                    resources['cpu'] - available_resources['cpu'],
+                    resources['gpu'] - available_resources['gpu']
+                ))
 
-            # wait for task release resources
-            while (
-                available_resources['cpu'] < required_cpu
-                or available_resources['gpu'] < required_gpu
-            ):
-                if ongoing_task:
-                    (
-                        next_finish_time,
-                        cpus,
-                        gpus,
-                        finished_task_id,
-                        task_name,
-                        task_node,
-                    ) = heapq.heappop(ongoing_task)
-                    task_record = running_seq[finished_task_id]
-                    task_record['finish_time'] = current_time
-                    task_record['total_runtime'] = (
-                        current_time - task_record['start_time']
-                    )
-                    current_time = next_finish_time  # time move
+            # 等待资源释放
+            while (available_resources['cpu'] < required_cpu or 
+                available_resources['gpu'] < required_gpu):
+                if ongoing_tasks:
+                    finish_time, cpus, gpus, *_ = heapq.heappop(ongoing_tasks)
+                    current_time = finish_time
                     available_resources['cpu'] += cpus
                     available_resources['gpu'] += gpus
+                    resource_usage.append((
+                        current_time,
+                        resources['cpu'] - available_resources['cpu'],
+                        resources['gpu'] - available_resources['gpu']
+                    ))
                 else:
-                    # all task release, resources still not enough
-                    raise ValueError(f"Not enough resources for all tasks, required cpu:{required_cpu}, gpu:{required_gpu}, available cpu:{available_resources['cpu']}, gpu:{available_resources['gpu']}, total resources:{resources}")
+                    raise ValueError(
+                        f"Not enough resources for task. Required CPU:{required_cpu}, "
+                        f"GPU:{required_gpu}, Available CPU:{available_resources['cpu']}, "
+                        f"GPU:{available_resources['gpu']}, Total:{resources}"
+                    )
 
+            # 分配资源给新任务
             available_resources['cpu'] -= required_cpu
             available_resources['gpu'] -= required_gpu
-            start_time = current_time
             finish_time = current_time + task['total_runtime']
+            
             heapq.heappush(
-                ongoing_task,
+                ongoing_tasks,
                 (
                     finish_time,
                     required_cpu,
                     required_gpu,
-                    task['task_id'],
+                    task_id,
                     task['name'],
-                    node,
-                ),
+                    task['node'],
+                )
             )
+            
+            # 更新individual中的任务时间信息
+            idx = ind.get_task_index(task_id)
+            if idx != -1:
+                ind.task_array[idx]['start_time'] = current_time
+                ind.task_array[idx]['finish_time'] = finish_time
+            
+            resource_usage.append((
+                current_time,
+                resources['cpu'] - available_resources['cpu'],
+                resources['gpu'] - available_resources['gpu']
+            ))
 
-            running_seq[task['task_id']] = {
-                'name': task['name'],
-                'task_id': task['task_id'],
-                'start_time': start_time,
-                'finish_time': None,
-                'total_runtime': None,
-                'resources': task['resources'],
-            }
-
-        # time move on and log task complete
-        while ongoing_task:
-            next_finish_time, cpus, gpus, finished_task_id, task_name, task_node = (
-                heapq.heappop(ongoing_task)
-            )
+        # 处理剩余任务
+        while ongoing_tasks:
+            finish_time, cpus, gpus, *_ = heapq.heappop(ongoing_tasks)
             available_resources['cpu'] += cpus
             available_resources['gpu'] += gpus
-            current_time = next_finish_time
-            task_record = running_seq[finished_task_id]
-            task_record['finish_time'] = current_time
-            task_record['total_runtime'] = current_time - task_record['start_time']
+            current_time = finish_time
+            resource_usage.append((
+                current_time,
+                resources['cpu'] - available_resources['cpu'],
+                resources['gpu'] - available_resources['gpu']
+            ))
 
-        # 返回总完成时间和任务运行序列
-        return current_time - record, running_seq
+        # 计算资源使用面积
+        resource_area = 0
+        total_runtime = current_time - start_time
+        
+        # 计算每个时间段的资源使用面积
+        for i in range(len(resource_usage) - 1):
+            time_delta = resource_usage[i+1][0] - resource_usage[i][0]
+            cpu_usage = resource_usage[i][1]
+            gpu_usage = resource_usage[i][2]
+            resource_area += (cpu_usage + gpu_usage) * time_delta
+
+        return current_time - start_time, resource_area, total_runtime
 
     def calculate_total_time(self, ind: individual):
         total_time = 0
-        for task in ind.task_allocation:
+        for task in ind.task_array:
             # total_time += self.hist_data.estimate_time(task)
             total_time += task['total_runtime']
         return total_time
 
-    def fitness(self, ind: individual, all_node=False):
-        if all_node:
-            # calculate total time based on avail resources and task
-            total_time = 0  ## time accumulate by all task
-            # completion_time = [ 0 for _ in range(len(self.node_resources.keys()))] ## HPC makespan
-            completion_time = defaultdict(list)
-
-            total_time = self.calculate_total_time(ind)
-            for node in self.node_resources.keys():
-                completion_time[node], ind.predict_run_seq_node[node] = (
-                    self.calculate_completion_time_record_with_running_task(
-                        self.node_resources[node],
-                        self.running_task_node[node],
-                        ind.task_allocation_node[node],
-                    )
-                )
-
-            # ind.score = -completion_time
-            ind.score = -max(completion_time.values())
-            return ind.score
-
-        else:
-            total_time = 0
-            completion_time = 0
-            completion_time, ind.predict_run_seq = (
-                self.calculate_completion_time_record_with_running_task(
-                    ind.total_resources,
-                    self.running_task_node[ind.task_allocation[0]['resources']['node']],
-                    ind.task_allocation,
-                )
+    def fitness(self, ind: individual) -> float:
+        """计算个体适应度
+        
+        Args:
+            ind: individual对象
+        
+        Returns:
+            float: 适应度分数
+        """
+        unique_nodes = np.unique(ind.task_array['node'])
+        completion_times = np.zeros(len(unique_nodes))
+        resource_areas = np.zeros(len(unique_nodes))
+        total_runtimes = np.zeros(len(unique_nodes))
+        
+        for i, node in enumerate(unique_nodes):
+            node_mask = ind.task_array['node'] == node
+            node_tasks = ind.task_array[node_mask]
+            
+            completion_time, resource_area, total_runtime = self.calculate_completion_time_record_with_running_task(
+                self.node_resources[node],
+                self.running_task_node[node],
+                node_tasks,
+                ind  # 传入individual对象
             )
-
-            ind.score = -completion_time
-            return ind.score
+            
+            completion_times[i] = completion_time
+            resource_areas[i] = resource_area
+            total_runtimes[i] = total_runtime
+        
+        # 存储调度指标
+        ind.completion_time = np.max(completion_times)
+        ind.resource_area = np.sum(resource_areas)
+        ind.total_runtime = np.max(total_runtimes)
+        
+        # 计算适应度分数
+        ind.score = -ind.completion_time
+        return ind.score
 
     def generate_node(self):
         nodes: list = list(self.node_resources.keys())
@@ -2204,7 +1989,7 @@ class evosch2:
 
     def generate_population_all(self, all_tasks, population_size: int):
         def find_suitable_node(required_cpu, required_gpu, node_iterator):
-            """寻找满足资源需求的节点"""
+            """寻找满足资源需求的节点，并将任务均匀分配"""
             checked_nodes = set()
             while True:
                 try:
@@ -2220,218 +2005,203 @@ class evosch2:
                     node_iterator = self.generate_node()
 
         which_node = self.generate_node()
-        task_nums = self.at.get_task_nums(all_tasks)
-        population = []
+        task_nums = sum(len(ids) for ids in all_tasks.values())
         
-        cpu_default_range = [1, 16] # should config in user input
-        gpu_default_range = [1, 4]
+        cpu_upper_bound = min(16, max(res['cpu'] for res in self.node_resources.values()))
+        gpu_upper_bound = min(4, max(res['gpu'] for res in self.node_resources.values()))
+        
+        population = []
 
-        # 获取所有节点中最大的CPU和GPU资源上限
-        cpu_upper_bound = max(self.node_resources.values(), key=lambda x: x['cpu'])['cpu']
-        cpu_range = min(16, cpu_upper_bound) # user define range
-        gpu_upper_bound = max(self.node_resources.values(), key=lambda x: x['gpu'])['gpu']
-        gpu_range = min(4, gpu_upper_bound) # user define range
-
-        # 生成随机资源分配的个体
+        # 生成population_size个随机资源分配的个体
         for _ in range(population_size):
-            ind = individual(tasks_nums=copy.deepcopy(task_nums), total_resources=self.node_resources)
-            task_queue = self.ind_init_task_allocation()
+            ind = individual(tasks_nums=task_nums, total_resources=self.node_resources)
+            task_idx = 0
+            which_node = self.generate_node()
             
+            # 直接构建task_array
             for name, ids in all_tasks.items():
-                if len(ids) == 0:
+                if not ids:
                     continue
                     
                 predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
                 for task_id in ids:
-                    # 随机生成资源需求
-                    required_cpu = random.randint(1, cpu_range)
-                    required_gpu = random.randint(1, gpu_range) if predefine_gpu > 0 else 0
+                    required_cpu = random.randint(1, cpu_upper_bound)
+                    required_gpu = random.randint(1, gpu_upper_bound) if predefine_gpu > 0 else 0
+                    node = find_suitable_node(required_cpu, required_gpu, which_node)
                     
-                    try:
-                        # 寻找满足资源需求的节点
-                        node = find_suitable_node(required_cpu, required_gpu, which_node)
-                        new_task = {
-                            "name": name,
-                            "task_id": task_id,
-                            "resources": {
-                                "cpu": required_cpu,
-                                "gpu": required_gpu,
-                                "node": node
-                            }
-                        }
-                        task_queue[node].append(new_task)
-                    except ValueError as e:
-                        logger.error(f"Failed to allocate task {task_id}: {str(e)}")
-                        raise
-                    
-            # 随机打乱每个节点上的任务顺序
-            for key in task_queue.keys():
-                random.shuffle(task_queue[key])
-
-            ind.task_allocation_node = task_queue
-            task_allocation = []
-            for key in task_queue.keys():
-                task_allocation.extend(task_queue[key])
-            ind.task_allocation = task_allocation
+                    ind.task_array[task_idx] = (
+                        name, task_id, required_cpu, required_gpu, node, 0.0, 0.0, 0.0
+                    )
+                    task_idx += 1
+            
+            ind.task_array_shuffled()  # shuffle task array
+            ind.update_task_id_index()
+            ind.init_node_array()
             population.append(ind)
 
         # 添加最小资源配置的个体
-        ind = individual(tasks_nums=copy.deepcopy(task_nums), total_resources=self.node_resources)
-        task_queue = self.ind_init_task_allocation()
+        ind = individual(tasks_nums=task_nums, total_resources=self.node_resources)
+        task_idx = 0
+        which_node = self.generate_node()
         
         for name, ids in all_tasks.items():
-            if len(ids) == 0:
+            if not ids:
                 continue
                 
             predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
             for task_id in ids:
-                required_cpu = 1 # user define range min or default
+                required_cpu = 1
                 required_gpu = min(1, predefine_gpu)
+                node = find_suitable_node(required_cpu, required_gpu, which_node)
                 
-                try:
-                    node = find_suitable_node(required_cpu, required_gpu, which_node)
-                    new_task = {
-                        "name": name,
-                        "task_id": task_id,
-                        "resources": {
-                            "cpu": required_cpu,
-                            "gpu": required_gpu,
-                            "node": node
-                        }
-                    }
-                    task_queue[node].append(new_task)
-                except ValueError as e:
-                    logger.error(f"Failed to allocate minimal resource task {task_id}: {str(e)}")
-                    raise
-
-        for key in task_queue.keys():
-            random.shuffle(task_queue[key])
+                ind.task_array[task_idx] = (
+                    name, task_id, required_cpu, required_gpu, node, 0.0, 0.0, 0.0
+                )
+                task_idx += 1
         
-        ind.task_allocation_node = task_queue
-        task_allocation = []
-        for key in task_queue.keys():
-            task_allocation.extend(task_queue[key])
-        ind.task_allocation = task_allocation
+        ind.task_array_shuffled()  # shuffle task array
+        ind.update_task_id_index()
+        ind.init_node_array()
         population.append(ind)
 
         # 添加预定义资源配置的个体
-        ind = individual(tasks_nums=copy.deepcopy(task_nums), total_resources=self.node_resources)
-        task_queue = self.ind_init_task_allocation()
+        ind = individual(tasks_nums=task_nums, total_resources=self.node_resources)
+        task_idx = 0
+        which_node = self.generate_node()
         
         for name, ids in all_tasks.items():
-            if len(ids) == 0:
+            if not ids:
                 continue
                 
             predefine_cpu = self.sch_data.sch_task_list[ids[0]]['resources.cpu']
             predefine_gpu = self.sch_data.sch_task_list[ids[0]]['resources.gpu']
             
             for task_id in ids:
-                try:
-                    node = find_suitable_node(predefine_cpu, predefine_gpu, which_node)
-                    new_task = {
-                        "name": name,
-                        "task_id": task_id,
-                        "resources": {
-                            "cpu": predefine_cpu,
-                            "gpu": predefine_gpu,
-                            "node": node
-                        }
-                    }
-                    task_queue[node].append(new_task)
-                except ValueError as e:
-                    logger.error(f"Failed to allocate predefined resource task {task_id}: {str(e)}")
-                    raise
-
-        for key in task_queue.keys():
-            random.shuffle(task_queue[key])
-            
-        ind.task_allocation_node = task_queue
-        task_allocation = []
-        for key in task_queue.keys():
-            task_allocation.extend(task_queue[key])
-        ind.task_allocation = task_allocation
+                node = find_suitable_node(predefine_cpu, predefine_gpu, which_node)
+                ind.task_array[task_idx] = (
+                    name, task_id, predefine_cpu, predefine_gpu, node, 0.0, 0.0, 0.0
+                )
+                task_idx += 1
+        
+        ind.task_array_shuffled()  # shuffle task array
+        ind.update_task_id_index()
+        ind.init_node_array()
         population.append(ind)
 
         return population
 
     def generate_population_in_node(self, ind: individual, pop_size: int = 10):
-        """generate population in each node"""
+        """为每个节点生成子种群"""
         population_node = defaultdict(list)
-        task_allocation_node = ind.task_allocation_node
-        for node in self.node_resources.keys():
-            task_nums = len(task_allocation_node[node])
+        ind.init_node_array()
+        # 获取每个节点的任务数量
+        for node_entry in ind.node_array:
+            node = node_entry['node']
+            valid_indices = node_entry['task_indices'][node_entry['task_indices'] >= 0]
+            task_nums = len(valid_indices)
+            
             if task_nums == 0:
                 continue
-            for i in range(pop_size):
+                
+            # 获取该节点的任务
+            node_tasks = ind.task_array[valid_indices]
+            
+            # 为该节点生成多个个体
+            for _ in range(pop_size):
                 n_ind = individual(
-                    tasks_nums=copy.deepcopy(task_nums),
+                    tasks_nums=task_nums,
                     total_resources=self.node_resources[node],
                 )
-                n_ind.task_allocation = copy.deepcopy(task_allocation_node[node])
-                random.shuffle(n_ind.task_allocation)  # shuffle task run seq
+                
+                # 复制任务数据
+                n_ind.task_array = np.copy(node_tasks)
+                np.random.shuffle(n_ind.task_array)  # 随机打乱顺序
+                n_ind.update_task_id_index()
+                
+                # 初始化node_array（单节点）
+                # n_ind.node_array = np.zeros(1, dtype=n_ind.node_dtype)
+                # n_ind.node_array[0]['node'] = node
+                # n_ind.node_array[0]['task_indices'][:task_nums] = np.arange(task_nums)
+                # n_ind.node_array[0]['task_indices'][task_nums:] = -1
+                
                 population_node[node].append(n_ind)
 
-            # use fitness function set pred run seq evo operation need it
-            scores = [
-                self.fitness(ind, all_node=False) for ind in population_node[node]
-            ]
+            # 计算适应度
+            scores = [self.fitness(ind) for ind in population_node[node]]
 
         return population_node
-
-    def mutate_cpu(self, population: list, ind_input: individual):
-        ind = ind_input.copy()
-        ## change resource
-        alloc = random.choice(ind.task_allocation)
-        choice = [-5, -3, -2, -1, 0, 1, 2, 3, 5]
-        new_alloc = alloc['resources']['cpu'] + random.choice(choice)
-
-        if new_alloc <= 0:
-            alloc['resources']['cpu'] = 1
-        elif new_alloc >= self.node_resources[alloc['resources']['node']]['cpu']:
-            new_alloc = self.node_resources[alloc['resources']['node']]['cpu']
+    
+    def mutate_resources(self, population: list, ind: individual):
+        new_ind = ind.copy()
+        task_array = new_ind.task_array
+        
+        task_idx = random.choice(range(len(task_array)))
+        cpu_choice = [-5, -3, -2, -1, 0, 1, 2, 3, 5]
+        cpu_delta = random.choice(cpu_choice)
+        
+        if task_array[task_idx]['gpu'] == 0:
+            # task does not use GPU, skip
+            pass
         else:
-            alloc['resources']['cpu'] = new_alloc
+            gpu_choice = [-1, 0, 1]
+            gpu_delta = random.choice(gpu_choice)
+            new_gpu_value = task_array[task_idx]['gpu'] + gpu_delta
+            new_gpu_value = max(1, new_gpu_value)
+            new_gpu_value = min(new_gpu_value, self.node_resources[task_array[task_idx]['node']]['gpu'])
+            task_array[task_idx]['gpu'] = new_gpu_value
+        
+        new_cpu_value = task_array[task_idx]['cpu'] + cpu_delta
+        new_cpu_value = max(1, new_cpu_value)
+        new_cpu_value = min(new_cpu_value, self.node_resources[task_array[task_idx]['node']]['cpu'])
+        task_array[task_idx]['cpu'] = new_cpu_value
+        
+                # 验证没有重复task_id
+        task_ids = [task['task_id'] for task in new_ind.task_array]
+        assert len(set(task_ids)) == len(task_ids), f"Duplicate task_ids found after copy: {task_ids}"
+        population.append(new_ind)
 
-        population.append(ind)
-
-    def mutate_seq(self, population: list, ind_input: individual):
-        ind = ind_input.copy()
-        ## change task sequence
-        index1 = random.randrange(len(ind.task_allocation))
-        index2 = random.randrange(len(ind.task_allocation))
-        while index2 == index1:
-            index2 = random.randrange(len(ind.task_allocation))
-
-        ind.task_allocation[index1], ind.task_allocation[index2] = (
-            ind.task_allocation[index2],
-            ind.task_allocation[index1],
-        )
-
-        population.append(ind)
-
-    def crossover_arith_ave(
-        self, population: list, ind_input1: individual, ind_input2: individual
-    ):
-        ind1 = ind_input1.copy()
-        # task_avg = [None]*len(ind1.task_allocation)
-        # for i in range(len(ind1.task_allocation)):
-        #     name = ind1.task_allocation[i]['name']
-        #     task_id = ind1.task_allocation[i]['task_id']
-        #     task_avg[i] = {
-        #         "name": name,
-        #         "task_id": task_id,
-        #         "resources":{
-        #             "cpu": (ind1.get_task_resources(name,task_id)['cpu']+ind2.get_task_resources(name,task_id)['cpu'])//2
-        #     }}
-        # ind1.task_allocation = task_avg
-        for task in ind1.task_allocation:
-            name = task['name']
-            task_id = task['task_id']
-            task['resources']['cpu'] = (
-                ind_input1.get_task_resources(name, task_id)['cpu']
-                + ind_input2.get_task_resources(name, task_id)['cpu']
-            ) // 2
-        population.append(ind1)
+    
+    def mutate_seq(self, population: list, ind: individual):
+        new_ind = ind.copy()
+        task_array = new_ind.task_array
+        
+        # 使用正确的numpy结构化数组交换方式
+        idx1, idx2 = np.random.choice(range(len(task_array)), size=2, replace=False)
+        temp = task_array[idx1].copy()  # 使用深拷贝
+        task_array[idx1] = task_array[idx2].copy()  # 使用深拷贝
+        task_array[idx2] = temp
+        
+        new_ind.update_task_id_index()
+        
+        # 验证没有重复task_id
+        task_ids = [task['task_id'] for task in task_array]
+        assert len(set(task_ids)) == len(task_ids), f"Duplicate task_ids found after mutate_seq: {task_ids}"
+        
+        population.append(new_ind)
+    
+    def crossover_arith_ave(self, population: list, ind1: individual, ind2: individual):
+        """算术平均交叉 - 直接在task_array上操作"""
+        new_ind = ind1.copy()
+        try:
+            for task_id in ind1._task_id_index:
+                idx1 = ind1._task_id_index[task_id]
+                idx2 = ind2._task_id_index[task_id]
+                new_ind.task_array[idx1]['cpu'] = (
+                    ind1.task_array[idx1]['cpu'] + ind2.task_array[idx2]['cpu']
+                ) // 2
+                new_ind.task_array[idx1]['gpu'] = (
+                    ind1.task_array[idx1]['gpu'] + ind2.task_array[idx2]['gpu']
+                ) // 2
+        except KeyError:
+            print(f"Task {task_id} not found in both individuals")
+            print(ind1.task_array)
+            print(ind2.task_array)
+            return
+        
+                # 验证没有重复task_id
+        task_ids = [task['task_id'] for task in new_ind.task_array]
+        assert len(set(task_ids)) == len(task_ids), f"Duplicate task_ids found after copy: {task_ids}"
+        population.append(new_ind)
 
     def list_dict_found(self, list_dic, dic):
         for i in range(len(list_dic)):
@@ -2450,153 +2220,183 @@ class evosch2:
             ):
                 return i
         return None
-
-    def crossover_pmx(
-        self, population: list, ind_input1: individual, ind_input2: individual
-    ):
-        ind1 = ind_input1.copy()
-        ind2 = ind_input2.copy()
-        size = len(ind1.task_allocation)
-        p1, p2 = [0] * size, [0] * size
-
-        cxpoint1 = random.randint(0, size - 1)
-        cxpoint2 = random.randint(0, size - 1)
-        if cxpoint2 < cxpoint1:
-            cxpoint1, cxpoint2 = cxpoint2, cxpoint1
-
-        # print(cxpoint1,cxpoint2)
-        for i in range(cxpoint1, cxpoint2 + 1):
-            p1[i] = ind2.task_allocation[i]
-            p2[i] = ind1.task_allocation[i]
-
+    
+    def crossover_pmx(self, population: list, ind1: individual, ind2: individual):
+        """PMX交叉 - 使用numpy数组操作"""
+        size = len(ind1.task_array)
+        if size < 2:
+            return
+        
+        new_ind1 = ind1.copy()
+        new_ind2 = ind2.copy()
+        
+        # 选择交叉点
+        cxpoint1, cxpoint2 = sorted(np.random.choice(size, 2, replace=False))
+        
+        # 创建交换区域的映射
+        # 使用task_id作为键创建映射关系
+        segment1 = ind1.task_array[cxpoint1:cxpoint2+1]
+        segment2 = ind2.task_array[cxpoint1:cxpoint2+1]
+        
+        # 存储交换段中task_id的对应关系
+        mapping1 = {t['task_id']: i for i, t in enumerate(segment1, cxpoint1)}
+        mapping2 = {t['task_id']: i for i, t in enumerate(segment2, cxpoint1)}
+        
+        # 交换中间段
+        temp_segment = segment1.copy()
+        new_ind1.task_array[cxpoint1:cxpoint2+1] = segment2
+        new_ind2.task_array[cxpoint1:cxpoint2+1] = temp_segment
+        
+        # 处理交叉段外的元素
         for i in range(size):
             if i < cxpoint1 or i > cxpoint2:
-                ii = ind1.task_allocation[i]
-                while self.list_dict_found(p1[cxpoint1 : cxpoint2 + 1], ii):
-                    # ii = ind1.task_allocation[p1[cxpoint1:cxpoint2+1].index(ii)]
-                    ii = ind1.task_allocation[
-                        self.list_dict_index(ind2.task_allocation, ii)
-                    ]
-                p1[i] = ii
+                # 处理ind1
+                current_task_id = new_ind1.task_array[i]['task_id']
+                cnt = 0
+                while current_task_id in mapping2:
+                    if cnt > size:
+                        raise ValueError("Infinite loop detected,ind1 {} ind2 {}, current_task_id".format(ind1, ind2, current_task_id))
+                    cnt += 1
+                    # 找到映射关系中对应的位置
+                    mapped_idx = mapping2[current_task_id]
+                    current_task_id = ind1.task_array[mapped_idx]['task_id']
+                # 找到最终的任务后，复制所有字段
+                new_ind1.task_array[i] = ind1.task_array[
+                    ind1._task_id_index[current_task_id]
+                ].copy()
+                
+                # 处理ind2
+                current_task_id = new_ind2.task_array[i]['task_id']
+                cnt = 0
+                while current_task_id in mapping1:
+                    if cnt > size:
+                        raise ValueError("Infinite loop detected,ind1 {} ind2 {}, current_task_id".format(ind1, ind2, current_task_id))
+                    cnt += 1
+                    mapped_idx = mapping1[current_task_id]
+                    current_task_id = ind2.task_array[mapped_idx]['task_id']
+                new_ind2.task_array[i] = ind2.task_array[
+                    ind2._task_id_index[current_task_id]
+                ].copy()
+        
+        # 更新索引
+        new_ind1.update_task_id_index()
+        new_ind2.update_task_id_index()
+        
+                # 验证没有重复task_id
+        task_ids = [task['task_id'] for task in new_ind1.task_array]
+        assert len(set(task_ids)) == len(task_ids), f"Duplicate task_ids found after copy: {task_ids}"
+        
+                # 验证没有重复task_id
+        task_ids = [task['task_id'] for task in new_ind2.task_array]
+        assert len(set(task_ids)) == len(task_ids), f"Duplicate task_ids found after copy: {task_ids}"
+        population.extend([new_ind1, new_ind2])
 
-                ii = ind2.task_allocation[i]
-                while self.list_dict_found(p2[cxpoint1 : cxpoint2 + 1], ii):
-                    # ii = ind2.task_allocation[p2[cxpoint1:cxpoint2+1].index(ii)]
-                    ii = ind2.task_allocation[
-                        self.list_dict_index(ind1.task_allocation, ii)
-                    ]
-                p2[i] = ii
-
-        ind1.task_allocation = p1
-        ind2.task_allocation = p2
-        population.append(ind1)
-        population.append(ind2)
-
-    def opt_gpu(self, population: list, ind: individual):
-        ind = ind.copy()
-        tasks = [
-            task
-            for task in ind.predict_run_seq.items()
-            if task[1]['resources']['gpu'] >= 1
-        ]
-        tasks = sorted(tasks, key=lambda x: x[1]['total_runtime'], reverse=True)
-        # 对最长运行时间的任务增加 GPU 资源
-        for i in range((len(tasks) // 3)):  # 处理前1/3的任务
-            index = self.list_dict_index(ind.task_allocation, tasks[i][1])
-            if index:
-                new_alloc = (
-                    random.choice([1, 2])
-                    + ind.task_allocation[index]['resources']['gpu']
-                )
-                max_gpu = ind.total_resources['gpu']
-                if new_alloc <= max_gpu:  # 只允许在资源约束内增加
-                    ind.task_allocation[index]['resources']['gpu'] = new_alloc
-
-        # 对最短运行时间的任务减少 GPU 资源
-        for i in range((len(tasks) // 3)):  # 处理后1/3的任务
-            index = self.list_dict_index(ind.task_allocation, tasks[-i][1])
-            if index:
-                new_alloc = ind.task_allocation[index]['resources']['gpu'] - 1
-                if new_alloc >= 1:  # 确保至少有 1 个 GPU 资源
-                    ind.task_allocation[index]['resources']['gpu'] = new_alloc
-
-        # 将修改后的个体添加到种群中
-        population.append(ind)
+    def opt_gpu(self, population: list[individual], ind: individual):
+        new_ind = ind.copy()
+        task_array = new_ind.task_array
+        
+        # 筛选GPU任务并排序
+        gpu_mask = task_array['gpu'] >= 1
+        gpu_tasks = task_array[gpu_mask]
+        if len(gpu_tasks) == 0:
+            return
+        
+        sorted_indices = np.argsort(-gpu_tasks['total_runtime'])  # 倒序排序
+        
+        # 批量调整前1/3
+        top_count = max(1, len(sorted_indices) // 3)
+        top_indices = sorted_indices[:top_count]
+        increments = np.random.choice([1, 2], size=top_count)
+        new_gpu = np.clip(gpu_tasks[top_indices]['gpu'] + increments, 1, ind.total_resources['gpu'])
+        task_array[gpu_mask][top_indices]['gpu'] = new_gpu
+        
+        # 批量调整后1/3
+        bottom_indices = sorted_indices[-top_count:]
+        decrements = np.random.choice([1], size=top_count)
+        new_gpu = np.clip(gpu_tasks[bottom_indices]['gpu'] - decrements, 1, None)
+        task_array[gpu_mask][bottom_indices]['gpu'] = new_gpu
+        
+        population.append(new_ind)
 
     def opt1(self, population: list, ind: individual):
-        ind = ind.copy()
-        tasks = sorted(
-            ind.predict_run_seq.items(),
-            key=lambda x: x[1]['total_runtime'],
-            reverse=True,
-        )
+        new_ind = ind.copy()
+        task_array = new_ind.task_array
+        
+        # 按运行时间排序
+        sorted_indices = np.argsort(-task_array['total_runtime'])
+        
+        if np.random.rand() < 0.5:  # 增加资源
+            # 批量处理前1/3任务
+            top_count = max(1, len(sorted_indices) // 3)
+            top_indices = sorted_indices[:top_count]
+            current_cpus = task_array[top_indices]['cpu']
+            
+            # 向量化计算增量
+            # 激进
+            # increments = np.select(
+            #     [current_cpus < 4, current_cpus < 8],
+            #     [np.random.choice([2,3,4], size=top_count),
+            #     np.random.choice([4,6,8], size=top_count)],
+            #     default=np.random.choice([6,8,10], size=top_count)
+            # )
+            # 温和
+            increments = np.random.choice([1,1,2,3,4], size=top_count)
+            
+            max_cpus = np.array([self.node_resources[t['node']]['cpu'] for t in task_array[top_indices]])
+            new_cpus = np.clip(current_cpus + increments, 1, max_cpus)
+            task_array[top_indices]['cpu'] = new_cpus
+        else:  # 减少资源
+            # 批量处理后1/3任务
+            bottom_count = max(1, len(sorted_indices) // 3)
+            bottom_indices = sorted_indices[-bottom_count:]
+            current_cpus = task_array[bottom_indices]['cpu']
+            
+            # 激进
+            # decrements = np.select(
+            #     [current_cpus > 8, current_cpus > 4],
+            #     [np.random.choice([4,6], size=bottom_count),
+            #     np.random.choice([2,3], size=bottom_count)],
+            #     default=1
+            # )
+            # 温和
+            decrements = np.random.choice([1,1,2,3,4], size=bottom_count)
+            
+            new_cpus = np.clip(current_cpus - decrements, 1, None)
+            task_array[bottom_indices]['cpu'] = new_cpus
+        
+        population.append(new_ind)
 
-        # 随机选择是增加还是减少资源
-        if random.random() < 0.5:  # 50%概率增加资源
-            # 对运行时间最长的任务增加资源
-            for i in range((len(tasks) // 3)):
-                index = self.list_dict_index(ind.task_allocation, tasks[i][1])
-                if index:
-                    current_cpu = ind.task_allocation[index]['resources']['cpu']
-                    node = ind.task_allocation[index]['resources']['node']
-                    max_cpu = self.node_resources[node]['cpu']
-
-                    # 更激进的资源增加策略
-                    if current_cpu < 4:
-                        increment = random.choice([2, 3, 4])
-                    elif current_cpu < 8:
-                        increment = random.choice([4, 6, 8])
-                    else:
-                        increment = random.choice([6, 8, 10])
-
-                    new_alloc = current_cpu + increment
-                    if new_alloc <= max_cpu:  # 使用节点实际的CPU上限
-                        ind.task_allocation[index]['resources']['cpu'] = new_alloc
-
-        else:  
-            # 对运行时间最短的任务减少资源
-            for i in range((len(tasks) // 3)):
-                index = self.list_dict_index(ind.task_allocation, tasks[-(i+1)][1])
-                if index:
-                    current_cpu = ind.task_allocation[index]['resources']['cpu']
-
-                    # 更谨慎的资源减少策略
-                    if current_cpu > 8:
-                        decrement = random.choice([4, 6])
-                    elif current_cpu > 4:
-                        decrement = random.choice([2, 3])
-                    else:
-                        decrement = 1
-
-                    new_alloc = current_cpu - decrement
-                    if new_alloc >= 1:  # 确保至少保留1个CPU
-                        ind.task_allocation[index]['resources']['cpu'] = new_alloc
-
-        population.append(ind)
 
     def opt2(self, population: list, ind: individual):
-        ind = ind.copy()
-        ## advance the latest task order
-        tasks = sorted(
-            ind.predict_run_seq.items(), key=lambda x: x[1]['finish_time']
-        )  # asending
-        task = tasks[-1][1]
-        index = self.list_dict_index(ind.task_allocation, task)
-        # task may in running, so we need to check if it is in the task allocation
-        if index:
-            new_index = random.randrange(0, index)
-            element = ind.task_allocation.pop(index)
-            ind.task_allocation.insert(new_index, element)
-
-        ## delay the earliest task order
-        # task = min(ind.predict_run_seq, key=lambda x:x['start_time'])
-        # index = self.list_dict_index(ind.task_allocation,task)
-        # # task may in running, so we need to check if it is in the task allocation
-        # if index:
-        #     new_index = random.randrange(index, len(ind.task_allocation))
-        #     element = ind.task_allocation.pop(index)
-        #     ind.task_allocation.insert(new_index, element)
-        population.append(ind)
+        new_ind = ind.copy()
+        task_array = new_ind.task_array
+        
+        # 找到最晚完成的任务
+        latest_idx = np.argmax(task_array['finish_time'])
+        
+        # tmp
+        if latest_idx == 0:
+            return
+        
+        # 生成新位置（避免列表操作）
+        try:
+            new_pos = np.random.randint(0, latest_idx)
+        except ValueError:
+            print(latest_idx)
+            print(task_array)
+        
+        # 使用数组索引操作替代列表pop/insert
+        indices = np.arange(len(task_array))
+        mask = (indices != latest_idx)
+        new_order = np.concatenate([
+            indices[mask][:new_pos],
+            [latest_idx],
+            indices[mask][new_pos:]
+        ])
+        new_ind.task_array = task_array[new_order]
+        new_ind.update_task_id_index()
+        
+        population.append(new_ind)
 
     def process_individual_opt(self, population):
         # logger.info(f"process_infividual:{ind1.individual_id}")
@@ -2605,8 +2405,8 @@ class evosch2:
             self.opt2(ind)
 
     def process_individual_mutate(self, population, ind1, ind2, crossover_rate=0):
-        self.mutate_cpu(population, ind1)
-        self.mutate_cpu(population, ind2)
+        self.mutate_resources(population, ind1)
+        self.mutate_resources(population, ind2)
 
         self.mutate_seq(population, ind1)
         self.mutate_seq(population, ind2)
@@ -2614,12 +2414,6 @@ class evosch2:
         self.crossover_pmx(population, ind1, ind2)
         self.crossover_arith_ave(population, ind1, ind2)
 
-    def check_generation_node(self, population):
-        logger_buffer = {}
-        for ind in population:
-            for node in ind.task_allocation_node.keys():
-                if len(ind.task_allocation_node[node]) == 0:
-                    logger_buffer[ind.individual_id] = f"Node {node} has no task"
 
     def clean_population(self, population):
         process = psutil.Process()
@@ -2635,12 +2429,12 @@ class evosch2:
 
     def run_ga_for_node(self, node, population, num_runs_in_node, num_generations_node):
         self.write_log(f"\nNode {node} GA start")
-        self.write_log(f"Initial allocation: {population[0].task_allocation}")
+        self.write_log(f"Initial allocation: {population[0].task_array}")
 
         # 检查边界条件
-        if len(population) < 1 or len(population[0].task_allocation) < 2:
+        if len(population) < 1 or len(population[0].task_array) < 2:
             self.write_log(f"Node {node}: No population, or only one task. Skipping...")
-            return (node, population[0].task_allocation)
+            return (node, population[0])
 
         score = 0
         new_score = 0
@@ -2654,8 +2448,8 @@ class evosch2:
                 ind1 = population[i]
                 ind2 = population[size - i - 1]
 
-                if new_score == score:
-                    self.process_individual_mutate(population, ind1, ind2)
+                # if new_score == score:
+                self.process_individual_mutate(population, ind1, ind2)
 
                 self.opt1(population, ind1)
                 self.opt1(population, ind2)
@@ -2667,7 +2461,7 @@ class evosch2:
             self.sch_data.Task_time_predictor.estimate_ga_population(
                 population, self.sch_data.sch_task_list, all_node=False
             )
-            scores = [self.fitness(ind, all_node=False) for ind in population]
+            scores = [self.fitness(ind) for ind in population]
             population = [population[i] for i in np.argsort(scores)[::-1]]
             score = new_score
             new_score = population[0].score
@@ -2677,19 +2471,34 @@ class evosch2:
             self.write_log(
                 f"Node {node} Generation {gen_node + 1}: "
                 f"Score = {new_score:.2f}, "
-                f"Best CPU alloc = {[task['resources']['cpu'] for task in best_ind.task_allocation]}"
+                f"Best CPU alloc = {[task['cpu'] for task in best_ind.task_array]}, "
             )
 
         best_ind = max(population, key=lambda ind: ind.score)
         self.write_log(
             f"Node {node} Final Result:\n"
             f"Best Score = {best_ind.score:.2f}\n"
-            f"Final Allocation = {best_ind.task_allocation}\n"
+            f"Final Allocation = {best_ind.task_array}\n"
             f"{'-' * 80}"
         )
+        return (node, best_ind)
 
-        return (node, best_ind.task_allocation)
 
+    def update_node_tasks(self, a_ind, best_node_ind, node):
+        # 直接获取指定node的任务
+        node_mask = best_node_ind.task_array['node'] == node
+        best_tasks = best_node_ind.task_array[node_mask]
+        
+        # 获取这些任务的task_ids及其在a_ind中的位置
+        task_ids = best_tasks['task_id']
+        positions = np.array([a_ind._task_id_index[tid] for tid in task_ids])
+        
+        # 按best_tasks的顺序更新这些位置的任务
+        a_ind.task_array[positions] = best_tasks
+        
+        # 更新索引映射
+        a_ind.update_task_id_index()
+        
     def run_ga(
         self,
         all_tasks:list[dict[str, int]],
@@ -2707,10 +2516,11 @@ class evosch2:
 
         # run no record task
         ind = self.detect_no_his_task(all_tasks)
-        if len(ind.task_allocation) > 0:
+        if ind is not None and len(ind.task_array) > 0:
             return ind.task_allocation
 
         self.population = self.generate_population_all(all_tasks=all_tasks, population_size=num_generations_all)
+        
         predict_model_train_time = time.time()
         self.sch_data.Task_time_predictor.train(self.sch_data.historical_task_data.historical_data)
         logger.info(f"Predictor train time: {time.time() - predict_model_train_time:.2f} seconds")
@@ -2718,19 +2528,15 @@ class evosch2:
         self.sch_data.Task_time_predictor.estimate_ga_population(
             self.population, self.sch_data.sch_task_list, all_node=True
         )
-        scores = [self.fitness(ind, all_node=True) for ind in self.population]
+        scores = [self.fitness(ind) for ind in self.population]
         self.population = [self.population[i] for i in np.argsort(scores)[::-1]]
 
         # only one task , submit directly
         if self.at.get_total_nums(all_tasks) == 1:
             logger.info(f"Only one task, submit directly")
             self.best_ind = self.population[-1]  # predifined resources at last in list
-            best_allocation = []
-            for key in self.best_ind.task_allocation_node.keys(): # return a list
-                best_allocation.extend(self.best_ind.task_allocation_node[key])
-            return best_allocation
+            return self.best_ind.task_allocation
 
-        # logger.info(f"Generation 0: {population[0]}")
         score = self.population[0].score
         logger.info(f"initial score is {score}")
         new_score = 0
@@ -2738,12 +2544,13 @@ class evosch2:
         #     # evo on each node， population size will influence the times for ga run
         for gen, a_ind in enumerate(self.population):
             self.write_log(f"\nGlobal Generation {gen + 1}")
-            # self.write_log(f"Before load balance: {a_ind.task_allocation_node}")
-            # self.load_balance(a_ind)
-            # self.write_log(f"After load balance: {a_ind.task_allocation_node}")
             load_balance_times = 5
             num_runs = np.linspace(1, num_runs_in_node, load_balance_times).astype(int)
             for _ in range(load_balance_times):
+                self.write_log(f"Before load balance: {a_ind.task_array}")
+                self.load_balance(a_ind)
+                self.write_log(f"After load balance: {a_ind.task_array}")
+                
                 self.population_node = self.generate_population_in_node(
                     a_ind, num_generations_node
                 )  # generate ind on each node
@@ -2757,9 +2564,9 @@ class evosch2:
                         num_runs[_],
                         num_generations_node
                     )
-                    node, task_allocation = results
-                    a_ind.task_allocation_node[node] = task_allocation
-                    self.write_log(f"Node {node} final allocation: {task_allocation}")
+                    node, best_ind = results
+                    self.update_node_tasks(a_ind, best_ind, node)
+                    self.write_log(f"Node {node} final allocation: {best_ind.task_array}")
                 
                 # # 并行处理每个节点
                 # results = pool.starmap(
@@ -2770,26 +2577,23 @@ class evosch2:
                 #     ],
                 # )
                 # for node, task_allocation in results:
-                #     a_ind.task_allocation_node[node] = task_allocation
                 #     self.write_log(f"Node {node} final allocation: {task_allocation}")
 
                 # all node ind operation end
         # global ind operation here
-        scores = [self.fitness(ind, all_node=True) for ind in self.population]
+        scores = [self.fitness(ind) for ind in self.population]
         # logger.info(f"Generation {gen}: best ind score:{self.population[0].score}")
 
         # best ind global
         best_ind = max(self.population, key=lambda ind: ind.score)
         self.best_ind = best_ind
-        
+        best_allocation = best_ind.task_allocation
         self.write_log("\nFinal Results:")
         self.write_log(f"scores of all individuals: {scores}")
         self.write_log(f"Best individual score: {best_ind.score}")
-        self.write_log(f"Best allocation: {best_ind.task_allocation}")
+        self.write_log(f"Best allocation: {best_allocation}")
         self.write_log(f"GA running time: {time.time() - start_time:.2f} seconds")
-        best_allocation = []
-        for key in best_ind.task_allocation_node.keys():
-            best_allocation.extend(best_ind.task_allocation_node[key])
+
 
         logger.info("GA running time: %s seconds" % (time.time() - start_time))
         # self.at.move_allocation_to_scheduled(all_tasks, best_allocation) # should consider lock

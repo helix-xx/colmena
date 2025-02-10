@@ -48,7 +48,7 @@ class RedisQueues(ColmenaQueues):
                  proxystore_name: Optional[Union[str, Dict[str, str]]] = None,
                  proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
                  available_task_capacity: Optional[int] = 100, # add for evoscheduler
-                 enable_evo = False,
+                 scheduler = None, # add for evoscheduler
                  available_resources:dict = None):
         """
         Args:
@@ -69,7 +69,7 @@ class RedisQueues(ColmenaQueues):
                 ProxyStore use with that topic.
 
         """
-        super().__init__(topics, methods, serialization_method, keep_inputs, proxystore_name, proxystore_threshold,available_task_capacity, enable_evo, available_resources)
+        super().__init__(topics, methods, serialization_method, keep_inputs, proxystore_name, proxystore_threshold,available_task_capacity, scheduler, available_resources)
         self.hostname = hostname
         self.port = port
         self.redis_client = None

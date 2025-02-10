@@ -50,7 +50,7 @@ class ColmenaQueues:
         proxystore_threshold: Optional[Union[int, Dict[str, int]]] = None,
         available_task_capacity: Optional[int] = 16,
         #  estimate_methods: Optional[Dict[str, callable]] = None,
-        enable_evo=False,
+        scheduler="ga",
         available_resources: dict = None,
     ):
         """
@@ -75,10 +75,22 @@ class ColmenaQueues:
         """
 
         # Store the list of topics and other simple options
-        self.enable_fcfs = False
-        self.enable_smart_sch = True
-        self.scheduler_type = 'ga'
-        logger.info(f'using strategy: fcfs {self.enable_fcfs}, evo {self.enable_smart_sch}')
+        if scheduler not in ['ga', 'fcfs', 'mrsa']:
+            raise ValueError(f"Unknown scheduler type: {scheduler}")
+        if scheduler == 'ga':
+            self.enable_fcfs = False
+            self.enable_smart_sch = True
+            self.scheduler_type = 'ga'
+        elif scheduler == 'mrsa':
+            self.enable_fcfs = False
+            self.enable_smart_sch = True
+            self.scheduler_type = 'mrsa'
+        elif scheduler == 'fcfs':
+            self.enable_fcfs = True
+            self.enable_smart_sch = False
+            self.scheduler_type = 'fcfs'
+        logger.info(f'using scheduler type: {self.scheduler_type}')
+        
         self.topics = set(topics)
         self.methods = set(methods)
         self.topics.add('default')
@@ -460,6 +472,7 @@ class ColmenaQueues:
             while True:
                 all_nodes_blocked = True
                 for node, tasks in node_task_queues.items():
+                    node = str(node)
                     if node_blocked[node]:
                         continue  # 如果节点被阻塞，跳过这个节点
 
@@ -467,8 +480,8 @@ class ColmenaQueues:
                         continue  # 如果没有任务，跳过这个节点
 
                     task = tasks[0]
-                    cpu_value = task['resources']['cpu']
-                    gpu_value = task['resources']['gpu']
+                    cpu_value = int(task['resources']['cpu'])
+                    gpu_value = int(task['resources']['gpu'])
 
                     if (
                         self.smart_sch.evo_sch.resources[node]['cpu'] < cpu_value
