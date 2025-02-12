@@ -1,4 +1,5 @@
 # Standard library imports
+import re
 import uuid
 import copy
 import gc
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field, asdict, is_dataclass
 from functools import partial, update_wrapper
 from pathlib import Path
 from typing import Any, ClassVar, Collection, Dict, List, Literal, Optional, Union
+import bisect
 
 from functools import lru_cache
 # Third-party library imports
@@ -694,12 +696,13 @@ class individual:
             ('task_indices', 'i4', (100,))  # 假设每个节点最多100个任务
         ]
         
-        self.init_node_array()
+        # self.init_node_array()
             
     def init_node_array(self):
         """从task_array初始化node_array"""
         # 获取唯一的节点列表
-        nodes = np.unique(self.task_array['node'])
+        # nodes = np.unique(self.task_array['node'])
+        nodes = self.total_resources.keys()
         self.node_array = np.zeros(len(nodes), dtype=self.node_dtype)
         
         # 为每个节点创建任务索引数组
@@ -794,8 +797,8 @@ class individual:
         new_ind.task_array = np.copy(self.task_array)
         new_ind._task_id_index = self._task_id_index.copy()
         
-        if hasattr(self, 'node_array'):
-            new_ind.node_array = np.copy(self.node_array)
+        # if hasattr(self, 'node_array'):
+        #     new_ind.node_array = np.copy(self.node_array)
         
         return new_ind
 
@@ -1204,74 +1207,48 @@ class TaskTimePredictor:
     def estimate_ga_population(self, population: List, sch_task_list: Dict, 
                             all_node: bool = False) -> None:
         """批量预测种群中所有任务的运行时间"""
-        tasks_by_method = {}
         
-        # 首先收集所有方法和对应的任务数量
-        method_counts = {}
-        for ind in population:
-            unique_methods = np.unique(ind.task_array['name'])
-            for method in unique_methods:
-                method_mask = ind.task_array['name'] == method
-                if method not in method_counts:
-                    method_counts[method] = 0
-                method_counts[method] += np.sum(method_mask)
+        all_tasks = np.concatenate([ind.task_array for ind in population])
         
-        # 为每个方法预分配numpy数组
-        for method, count in method_counts.items():
-            # 创建结构化数组，保持原始数据类型
-            tasks_by_method[method] = np.empty(count, dtype=ind.task_array.dtype)
+        method_to_tasks = {
+            method: all_tasks[all_tasks['name'] == method] 
+            for method in self.methods if method in self._models
+        }
         
-        # 填充任务数据
-        current_indices = {method: 0 for method in method_counts.keys()}
-        
-        for ind in population:
-            unique_methods = np.unique(ind.task_array['name'])
-            for method in unique_methods:
-                method_mask = ind.task_array['name'] == method
-                method_tasks = ind.task_array[method_mask]
-                current_idx = current_indices[method]
-                next_idx = current_idx + len(method_tasks)
-                tasks_by_method[method][current_idx:next_idx] = method_tasks
-                current_indices[method] = next_idx
-        
-        # 进行预测
-        for method, task_array in tasks_by_method.items():
-            if method not in self._models:
-                logger.info(f"Model not found for method {method}")
+        for method, tasks in method_to_tasks.items():
+            if len(tasks) == 0:
                 continue
             
-            num_tasks = len(task_array)
-            X = np.empty((num_tasks, 3), dtype=np.float32)
-            
-            # 批量提取特征
-            for i in range(num_tasks):
-                task = task_array[i]
-                sch_task = sch_task_list[task['task_id']]
-                msg_input = sch_task.get('message_sizes', {}).get('inputs', 0.0)
-                X[i] = [msg_input, task['cpu'], task['gpu']]
-            
             try:
-                predictions = self._models[method].predict(X)
-                predictions = np.expm1(predictions)
+                num_tasks = len(tasks)
+                # 一次性创建特征矩阵
+                X = np.zeros((num_tasks, 3), dtype=np.float32)
+                
+                # 批量填充特征矩阵
+                task_ids = tasks['task_id']
+                X[:, 0] = [sch_task_list[tid].get('message_sizes.inputs', 1) for tid in task_ids]  # message sizes
+                X[:, 1] = tasks['cpu']  # CPU
+                X[:, 2] = tasks['gpu']  # GPU
+                
+                # 批量预测
+                predictions = np.expm1(self._models[method].predict(X))
                 
                 # 创建任务ID到预测结果的映射
-                prediction_map = dict(zip(task_array['task_id'], predictions))
+                prediction_map = dict(zip(task_ids, predictions))
                 
-                # 更新每个个体的运行时间
+                # 使用向量化操作更新种群
                 for ind in population:
-                    # 找到该方法的所有任务
                     method_mask = ind.task_array['name'] == method
                     if np.any(method_mask):
-                        # 获取需要更新的任务ID
                         task_ids = ind.task_array[method_mask]['task_id']
-                        # 批量更新运行时间
-                        for task_id in task_ids:
-                            idx = ind._task_id_index[task_id]
-                            ind.task_array[idx]['total_runtime'] = prediction_map[task_id]
-                    
+                        # 使用向量化操作更新运行时间
+                        update_indices = [ind._task_id_index[tid] for tid in task_ids]
+                        ind.task_array['total_runtime'][update_indices] = \
+                            [prediction_map[tid] for tid in task_ids]
+                        
             except Exception as e:
-                logger.error(f"Batch预测失败: {str(e)}")
-                logger.exception(e)  # 添加详细的错误跟踪
+                logger.error(f"Method {method} batch预测失败: {str(e)}")
+                logger.exception(e)
                 
     def _extract_features(self, task: Dict) -> Dict:
         """提取任务特征"""
@@ -1282,14 +1259,14 @@ class TaskTimePredictor:
                 features[feature] = value
         return features
     
-    def _extract_features_from_sch_task(self, sch_task: Dict, 
-                                      resources: Dict) -> Dict:
-        """从调度任务中提取特征"""
-        features = sch_task.copy()
-        # 更新资源相关的特征
-        features['resources.cpu'] = resources['cpu']
-        features['resources.gpu'] = resources['gpu']
-        return features
+    # def _extract_features_from_sch_task(self, sch_task: Dict, 
+    #                                   resources: Dict) -> Dict:
+    #     """从调度任务中提取特征"""
+    #     features = sch_task.copy()
+    #     # 更新资源相关的特征
+    #     features['resources.cpu'] = resources['cpu']
+    #     features['resources.gpu'] = resources['gpu']
+    #     return features
     
     @staticmethod
     def _get_nested_value(dict_obj: Dict, key_path: str) -> Any:
@@ -1645,15 +1622,15 @@ class evosch2:
         ind.update_task_id_index()
         
         # 初始化node_array
-        nodes = set(ind.task_array['node'])
-        ind.node_array = np.zeros(len(nodes), dtype=ind.node_dtype)
+        # nodes = set(ind.task_array['node'])
+        # ind.node_array = np.zeros(len(nodes), dtype=ind.node_dtype)
         
-        for i, node in enumerate(nodes):
-            ind.node_array[i]['node'] = node
-            node_mask = ind.task_array['node'] == node
-            task_indices = np.where(node_mask)[0]
-            ind.node_array[i]['task_indices'][:len(task_indices)] = task_indices
-            ind.node_array[i]['task_indices'][len(task_indices):] = -1
+        # for i, node in enumerate(nodes):
+        #     ind.node_array[i]['node'] = node
+        #     node_mask = ind.task_array['node'] == node
+        #     task_indices = np.where(node_mask)[0]
+        #     ind.node_array[i]['task_indices'][:len(task_indices)] = task_indices
+        #     ind.node_array[i]['task_indices'][len(task_indices):] = -1
         
         return ind
 
@@ -1796,8 +1773,8 @@ class evosch2:
 
 
     def calculate_completion_time_record_with_running_task(
-        self, 
-        resources: dict, 
+        self,
+        resources: dict,
         running_tasks: list, 
         task_array: np.ndarray,
         ind: individual
@@ -1805,8 +1782,8 @@ class evosch2:
         """计算完成时间、资源使用面积和总运行时间，并更新individual中的任务时间
         
         Args:
-            resources: 节点资源配置(需要深拷贝)
-            running_tasks: 正在运行的任务列表
+            resources: 节点资源配置
+            running_tasks: 正在运行的任务列表 
             task_array: 按执行顺序排列的任务数组
             ind: individual对象，用于更新任务时间信息
         
@@ -1815,123 +1792,111 @@ class evosch2:
         """
         current_time = time.time()
         start_time = current_time
-        ongoing_tasks = []
-        available_resources = copy.deepcopy(resources)
         
-        # 记录资源使用情况
-        resource_usage = []
+        # 使用列表替代堆,因为任务数量通常较少
+        ongoing_tasks = []
+        avail_cpu = resources['cpu']
+        avail_gpu = resources['gpu']
+        
+        # 记录资源使用变化点
+        resource_changes = []
         
         # 添加运行中的任务
         if running_tasks:
             for task in running_tasks:
-                heapq.heappush(
-                    ongoing_tasks,
-                    (
-                        task['finish_time'],
-                        task['resources']['cpu'],
-                        task['resources']['gpu'],
-                        task['task_id'],
-                        task['name'],
-                        task['resources']['node'],
-                    )
-                )
-                available_resources['cpu'] -= task['resources']['cpu']
-                available_resources['gpu'] -= task['resources']['gpu']
+                ongoing_tasks.append((
+                    task['finish_time'],
+                    task['resources']['cpu'],
+                    task['resources']['gpu'],
+                    task['task_id'],
+                    task['name'],
+                    task['resources']['node']
+                ))
+                avail_cpu -= task['resources']['cpu']
+                avail_gpu -= task['resources']['gpu']
             
-            resource_usage.append((
-                current_time,
-                resources['cpu'] - available_resources['cpu'],
-                resources['gpu'] - available_resources['gpu']
-            ))
+            resource_changes.append((current_time, resources['cpu'] - avail_cpu, resources['gpu'] - avail_gpu))
+            # 预排序以优化后续操作
+            ongoing_tasks.sort()
+
+        task_id_to_idx = {task['task_id']: idx for idx, task in enumerate(ind.task_array)}
 
         # 按数组顺序处理任务
         for task in task_array:
             required_cpu = task['cpu']
             required_gpu = task['gpu']
-            task_id = task['task_id']
             
-            # 检查已完成的任务并释放资源
-            while ongoing_tasks and ongoing_tasks[0][0] <= current_time:
-                finish_time, cpus, gpus, *_ = heapq.heappop(ongoing_tasks)
-                available_resources['cpu'] += cpus
-                available_resources['gpu'] += gpus
-                resource_usage.append((
-                    finish_time,
-                    resources['cpu'] - available_resources['cpu'],
-                    resources['gpu'] - available_resources['gpu']
-                ))
+            # 批量检查已完成任务
+            completed = []
+            for i, (finish_time, cpus, gpus, *_) in enumerate(ongoing_tasks):
+                if finish_time > current_time:
+                    break
+                completed.append(i)
+                avail_cpu += cpus
+                avail_gpu += gpus
+            
+            if completed:
+                resource_changes.append((current_time, resources['cpu'] - avail_cpu, resources['gpu'] - avail_gpu))
+                # 移除已完成任务
+                ongoing_tasks = [t for i, t in enumerate(ongoing_tasks) if i not in completed]
 
             # 等待资源释放
-            while (available_resources['cpu'] < required_cpu or 
-                available_resources['gpu'] < required_gpu):
-                if ongoing_tasks:
-                    finish_time, cpus, gpus, *_ = heapq.heappop(ongoing_tasks)
-                    current_time = finish_time
-                    available_resources['cpu'] += cpus
-                    available_resources['gpu'] += gpus
-                    resource_usage.append((
-                        current_time,
-                        resources['cpu'] - available_resources['cpu'],
-                        resources['gpu'] - available_resources['gpu']
-                    ))
-                else:
+            while avail_cpu < required_cpu or avail_gpu < required_gpu:
+                if not ongoing_tasks:
                     raise ValueError(
                         f"Not enough resources for task. Required CPU:{required_cpu}, "
-                        f"GPU:{required_gpu}, Available CPU:{available_resources['cpu']}, "
-                        f"GPU:{available_resources['gpu']}, Total:{resources}"
+                        f"GPU:{required_gpu}, Available CPU:{avail_cpu}, "
+                        f"GPU:{avail_gpu}, Total:{resources}"
                     )
+                
+                finish_time, cpus, gpus, *_ = ongoing_tasks.pop(0)
+                current_time = finish_time
+                avail_cpu += cpus
+                avail_gpu += gpus
+                resource_changes.append((current_time, resources['cpu'] - avail_cpu, resources['gpu'] - avail_gpu))
 
             # 分配资源给新任务
-            available_resources['cpu'] -= required_cpu
-            available_resources['gpu'] -= required_gpu
+            avail_cpu -= required_cpu
+            avail_gpu -= required_gpu
             finish_time = current_time + task['total_runtime']
             
-            heapq.heappush(
+            # 二分插入以保持排序
+            bisect.insort(
                 ongoing_tasks,
                 (
                     finish_time,
-                    required_cpu,
+                    required_cpu, 
                     required_gpu,
-                    task_id,
+                    task['task_id'],
                     task['name'],
-                    task['node'],
+                    task['node']
                 )
             )
             
             # 更新individual中的任务时间信息
-            idx = ind.get_task_index(task_id)
+            idx = task_id_to_idx.get(task['task_id'], -1)
             if idx != -1:
                 ind.task_array[idx]['start_time'] = current_time
                 ind.task_array[idx]['finish_time'] = finish_time
             
-            resource_usage.append((
-                current_time,
-                resources['cpu'] - available_resources['cpu'],
-                resources['gpu'] - available_resources['gpu']
-            ))
+            resource_changes.append((current_time, resources['cpu'] - avail_cpu, resources['gpu'] - avail_gpu))
 
         # 处理剩余任务
         while ongoing_tasks:
-            finish_time, cpus, gpus, *_ = heapq.heappop(ongoing_tasks)
-            available_resources['cpu'] += cpus
-            available_resources['gpu'] += gpus
+            finish_time, cpus, gpus, *_ = ongoing_tasks.pop(0)
+            avail_cpu += cpus
+            avail_gpu += gpus
             current_time = finish_time
-            resource_usage.append((
-                current_time,
-                resources['cpu'] - available_resources['cpu'],
-                resources['gpu'] - available_resources['gpu']
-            ))
+            resource_changes.append((current_time, resources['cpu'] - avail_cpu, resources['gpu'] - avail_gpu))
 
         # 计算资源使用面积
         resource_area = 0
         total_runtime = current_time - start_time
         
-        # 计算每个时间段的资源使用面积
-        for i in range(len(resource_usage) - 1):
-            time_delta = resource_usage[i+1][0] - resource_usage[i][0]
-            cpu_usage = resource_usage[i][1]
-            gpu_usage = resource_usage[i][2]
-            resource_area += (cpu_usage + gpu_usage) * time_delta
+        # 计算资源使用面积
+        for i in range(len(resource_changes) - 1):
+            time_delta = resource_changes[i+1][0] - resource_changes[i][0]
+            resource_area += (resource_changes[i][1] + resource_changes[i][2]) * time_delta
 
         return current_time - start_time, resource_area, total_runtime
 
@@ -1951,7 +1916,8 @@ class evosch2:
         Returns:
             float: 适应度分数
         """
-        unique_nodes = np.unique(ind.task_array['node'])
+        # unique_nodes = np.unique(ind.task_array['node'])
+        unique_nodes = self.node_resources.keys()
         completion_times = np.zeros(len(unique_nodes))
         resource_areas = np.zeros(len(unique_nodes))
         total_runtimes = np.zeros(len(unique_nodes))
@@ -2117,12 +2083,6 @@ class evosch2:
                 n_ind.task_array = np.copy(node_tasks)
                 np.random.shuffle(n_ind.task_array)  # 随机打乱顺序
                 n_ind.update_task_id_index()
-                
-                # 初始化node_array（单节点）
-                # n_ind.node_array = np.zeros(1, dtype=n_ind.node_dtype)
-                # n_ind.node_array[0]['node'] = node
-                # n_ind.node_array[0]['task_indices'][:task_nums] = np.arange(task_nums)
-                # n_ind.node_array[0]['task_indices'][task_nums:] = -1
                 
                 population_node[node].append(n_ind)
 
