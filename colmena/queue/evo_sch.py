@@ -119,6 +119,7 @@ class SmartScheduler:
         self.sch_data.usr_path = os.path.expanduser('~')
         
 
+        # init historical data and task time predictor
         hist_path = []
         # hist_path on Research and teaching cluster
         # hist_path.append(
@@ -146,13 +147,46 @@ class SmartScheduler:
             os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/training-results.json')
         )
         self.sch_data.historical_task_data.get_features_from_his_json(hist_path)
-        # self.sch_data.Task_time_predictor.polynomial_train(self.sch_data.historical_task_data.historical_data)
+        self.sch_data.Task_time_predictor.train(self.sch_data.historical_task_data.historical_data)
+        self.sch_data.Task_time_predictor.fill_time_running_database(self.available_resources, self.sch_data.historical_task_data.historical_data)
+        # self.sch_data.Task_time_predictor.fill_features_from_new_task(self.available_resources, self.sch_data.sch_task_list)
+        self.sch_data.Task_time_predictor.fill_runtime_records_with_predictor()
         
         logger.info('init smart scheduler')
+        
+        # warmup numba functions
+        self._warmup_numba_functions()
         
     def __del__(self):
         self.pool.close()
         self.pool.join()
+        
+    def _warmup_numba_functions(self):
+        """预热所有numba函数"""
+        print("Warming up numba functions...")
+        start = time.time()
+        
+        # 准备最小规模的测试数据
+        small_task_cpu = np.array([1], dtype=np.int32)
+        small_task_gpu = np.array([0], dtype=np.int32)
+        small_task_runtime = np.array([1.0], dtype=np.float64)
+        empty_running = np.array([], dtype=np.float64)
+        empty_cpus = np.array([], dtype=np.int32)
+        empty_gpus = np.array([], dtype=np.int32)
+        
+        # 预热计算完成时间函数
+        _calculate_completion_time(
+            small_task_cpu,
+            small_task_gpu,
+            small_task_runtime,
+            empty_running,
+            empty_cpus,
+            empty_gpus,
+            4,
+            2,
+            0.0
+        )
+        print(f"Warmed up in {time.time() - start:.2f} seconds")
         
     
     def acquire_resources(self, key):
@@ -284,8 +318,7 @@ class SmartScheduler:
         # run evo sch
             # with self.sch_lock: # 异步进行不需要加锁，每个调度算法都有自己的可调度任务
             all_tasks = self.sch_data.avail_task.get_all()
-            # self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
-            # all_tasks = copy.deepcopy(all_tasks) # 逻辑上all_task没有被修改，不需要深拷贝
+            self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
             best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
             self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
             self.best_result = self.evo_sch.best_ind
@@ -1705,11 +1738,22 @@ def _calculate_completion_time(
     
     # 添加运行中任务
     for i in range(n_running):
-        ongoing_times[task_count] = running_finish_times[i]
-        ongoing_cpus[task_count] = running_cpus[i]
-        ongoing_gpus[task_count] = running_gpus[i]
-        avail_cpu -= ongoing_cpus[task_count]
-        avail_gpu -= ongoing_gpus[task_count]
+        insert_pos = task_count
+        for j in range(task_count):
+            if ongoing_times[j] > running_finish_times[i]:
+                insert_pos = j
+                break
+        # 移动现有任务
+        for j in range(task_count, insert_pos, -1):
+            ongoing_times[j] = ongoing_times[j - 1]
+            ongoing_cpus[j] = ongoing_cpus[j - 1]
+            ongoing_gpus[j] = ongoing_gpus[j - 1]
+        
+        ongoing_times[insert_pos] = running_finish_times[i]
+        ongoing_cpus[insert_pos] = running_cpus[i]
+        ongoing_gpus[insert_pos] = running_gpus[i]
+        avail_cpu -= ongoing_cpus[insert_pos]
+        avail_gpu -= ongoing_gpus[insert_pos]
         task_count += 1
         
     # 记录资源使用变化点
@@ -1798,14 +1842,33 @@ def _calculate_completion_time(
         task_starts[i] = current_time
         task_ends[i] = finish_time
         
+        avail_cpu -= required_cpu
+        avail_gpu -= required_gpu
+        
+        # 记录资源变化
+        changes_times[changes_count] = current_time
+        changes_cpu[changes_count] = resources_cpu - avail_cpu
+        changes_gpu[changes_count] = resources_gpu - avail_gpu
+        changes_count += 1
+    
+    while task_count > 0:
+        current_time = ongoing_times[0]
+            
+        avail_cpu += ongoing_cpus[0]
+        avail_gpu += ongoing_gpus[0]
+        
         # 记录资源变化
         changes_times[changes_count] = current_time
         changes_cpu[changes_count] = resources_cpu - avail_cpu
         changes_gpu[changes_count] = resources_gpu - avail_gpu
         changes_count += 1
         
-        avail_cpu -= required_cpu
-        avail_gpu -= required_gpu
+        # 移除完成的任务
+        for j in range(task_count - 1):
+            ongoing_times[j] = ongoing_times[j + 1]
+            ongoing_cpus[j] = ongoing_cpus[j + 1]
+            ongoing_gpus[j] = ongoing_gpus[j + 1]
+        task_count -= 1
         
     # 计算资源使用面积
     resource_area = 0.0
@@ -1814,7 +1877,7 @@ def _calculate_completion_time(
         area = (changes_cpu[i] + changes_gpu[i]) * time_delta
         resource_area += area
         
-    completion_time = task_ends[-1] - start_time if n_tasks > 0 else 0
+    completion_time = current_time - start_time if n_tasks > 0 else 0
     total_runtime = completion_time
     
     return completion_time, resource_area, total_runtime, task_starts, task_ends
@@ -2461,24 +2524,6 @@ class evosch2:
         task_ids = [task['task_id'] for task in new_ind.task_array]
         assert len(set(task_ids)) == len(task_ids), f"Duplicate task_ids found after copy: {task_ids}"
         population.append(new_ind)
-
-    def list_dict_found(self, list_dic, dic):
-        for i in range(len(list_dic)):
-            if (
-                list_dic[i]['task_id'] == dic['task_id']
-                and list_dic[i]['name'] == dic['name']
-            ):
-                return True
-        return False
-
-    def list_dict_index(self, list_dic, dic):
-        for i in range(len(list_dic)):
-            if (
-                list_dic[i]['task_id'] == dic['task_id']
-                and list_dic[i]['name'] == dic['name']
-            ):
-                return i
-        return None
     
     def crossover_pmx(self, population: list, ind1: individual, ind2: individual):
         """PMX交叉 - 使用numpy数组操作"""
@@ -2600,10 +2645,10 @@ class evosch2:
             # )
             # 温和
             increments = np.random.choice([1,1,2,3,4], size=top_count)
-            
-            max_cpus = np.array([self.node_resources[t['node']]['cpu'] for t in task_array[top_indices]])
-            new_cpus = np.clip(current_cpus + increments, 1, max_cpus)
-            task_array[top_indices]['cpu'] = new_cpus
+            for i, idx in enumerate(top_indices):
+                max_cpu = self.node_resources[task_array[idx]['node']]['cpu']
+                new_cpu = np.clip(task_array[idx]['cpu'] + increments[i], 1, max_cpu)
+                task_array[idx]['cpu'] = new_cpu
         else:  # 减少资源
             # 批量处理后1/3任务
             bottom_count = max(1, len(sorted_indices) // 3)
@@ -2619,9 +2664,9 @@ class evosch2:
             # )
             # 温和
             decrements = np.random.choice([1,1,2,3,4], size=bottom_count)
-            
-            new_cpus = np.clip(current_cpus - decrements, 1, None)
-            task_array[bottom_indices]['cpu'] = new_cpus
+            for i, idx in enumerate(bottom_indices):
+                new_cpu = np.clip(task_array[idx]['cpu'] - decrements[i], 1, None)
+                task_array[idx]['cpu'] = new_cpu
         
         population.append(new_ind)
 
@@ -2772,7 +2817,12 @@ class evosch2:
         self.write_log(f"\nStarting GA with {task_nums} tasks, tasks list: {all_tasks}")
         self.write_log(f"Running tasks: {self.running_task_node}")
         self.write_log(f"Available resources: {self.node_resources}")
-
+        
+        # fill features from new task
+        self.sch_data.Task_time_predictor.fill_features_from_new_task(self.node_resources, self.sch_data.sch_task_list)
+        self.sch_data.Task_time_predictor.fill_runtime_records_with_predictor()
+        self.write_log(f"Predictor filled with new task features, consuming time: {time.time() - start_time:.2f} seconds")
+        
         # run no record task
         ind = self.detect_no_his_task(all_tasks)
         if ind is not None and len(ind.task_array) > 0:
