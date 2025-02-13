@@ -1,4 +1,5 @@
 # Standard library imports
+from email import message
 import re
 import uuid
 import copy
@@ -19,8 +20,10 @@ from functools import partial, update_wrapper
 from pathlib import Path
 from typing import Any, ClassVar, Collection, Dict, List, Literal, Optional, Union
 import bisect
+from numba import jit, float64, int32
 
 from functools import lru_cache
+from xml.sax.handler import all_features
 # Third-party library imports
 import numpy as np
 import pandas as pd
@@ -31,6 +34,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from torch import fill_
 
 # Lazy imports for heavy ML modules
 # def get_ml_models():
@@ -79,46 +83,13 @@ def dataclass_to_dict(obj):
         return obj
 
 
-
-class agent_pilot:
-    # 使用历史提交任务建模多项式拟合，判断那种任务适合作为下一次提交任务
-    # 如果agent停在用户逻辑内部，调度器难以通过agent触发
-    # 如果agent停在用户逻辑外部，调度器需要接管用户控制
-    agent_dict = None
-
-    acquire_level = None  # info for resources util
-
-    # agent resources model {agent_name: agent_info} agent_info:[permit_submit, resources_avail]
-    # resouces_level
-
-    def __init__(self, sch_data, resources_rate, available_resources, util_level):
-        # self.provision_resources = resources_rate * available_resources
-
-        self.sch_data:Sch_data = sch_data
-        self.resources_rate = resources_rate
-        self.available_resources = available_resources
-        self.util_level = util_level
-
-    def build_agent_model():
-        # resources model from his data
-        # add new result
-        # now we use average resources and time to predict
-        
-        pass
-
-
-    # call in agent / 避免被动call 主动调用agent提供资源？ 轮询？
-    def acquire_resources(self, method):
-        pass
-
-
 class SmartScheduler:
     # support different scheduling policy here
     
     ## init all sch model here
     # sch_data can be menber of all member model
     def __init__(self, methods, available_task_capacity, available_resources, sch_config= None):
-        self.sch_data: Sch_data = Sch_data()
+        self.sch_data: Sch_data = Sch_data(methods)
         # self.agent_pilot = agent_pilot(sch_data=self.sch_data, resources_rate=2, available_resources=available_resources, util_level=0.8)
         self.sch_data.init_task_queue(available_task(methods), available_task_capacity)
         self.sch_data.init_hist_task(HistoricalData(methods))
@@ -149,21 +120,30 @@ class SmartScheduler:
         
 
         hist_path = []
-        hist_path.append(
-            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/test_data/simulation-results-20241224-116.json')
-        )
-        hist_path.append(
-            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/test_data/simulation-results-20241224-152.json')
-        )
+        # hist_path on Research and teaching cluster
+        # hist_path.append(
+        #     os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/test_data/simulation-results-20241224-116.json')
+        # )
+        # hist_path.append(
+        #     os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/test_data/simulation-results-20241224-152.json')
+        # )
 
+        # hist_path.append(
+        #     os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/inference-results-20240319_230707.json')
+        # )
+        # hist_path.append(
+        #     os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/sampling-results-20241211.json')
+        # )
+        # hist_path.append(
+        #     os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/training-results-20241211.json')
+        # )
+        
+        # hist_path on qiming
         hist_path.append(
-            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/inference-results-20240319_230707.json')
+            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/simulation-results.json')
         )
         hist_path.append(
-            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/sampling-results-20241211.json')
-        )
-        hist_path.append(
-            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/training-results-20241211.json')
+            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/training-results.json')
         )
         self.sch_data.historical_task_data.get_features_from_his_json(hist_path)
         # self.sch_data.Task_time_predictor.polynomial_train(self.sch_data.historical_task_data.historical_data)
@@ -722,27 +702,6 @@ class individual:
             indices_len = len(task_indices)
             self.node_array[i]['task_indices'][:indices_len] = task_indices
             self.node_array[i]['task_indices'][indices_len:] = -1  # 填充-1表示无效索引
-    
-    # @property
-    # def task_allocation_node(self):
-    #     """从node_array转换为字典格式"""
-    #     if not hasattr(self, 'node_array'):
-    #         return {}
-            
-    #     result = {}
-    #     for node_entry in self.node_array:
-    #         node = node_entry['node']
-    #         valid_indices = node_entry['task_indices'][node_entry['task_indices'] >= 0]
-    #         result[node] = [self.task_array[idx] for idx in valid_indices]
-            
-    #     return result
-    
-    # @task_allocation_node.setter 
-    # def task_allocation_node(self, value):
-    #     """从字典格式设置node_array"""
-    #     self._task_allocation_node = value  # 保存原始数据
-    #     if value:
-    #         self.init_node_array()
         
     @property
     def task_allocation(self):
@@ -826,13 +785,14 @@ class individual:
 
 
 class Sch_data(SingletonClass):
-    def __init__(self):
+    def __init__(self, methods):
         self.result_list = {}
         self.sch_task_list = {}
         self.pilot_task = {}
         self.Task_time_predictor: TaskTimePredictor = None
         self.avail_task: available_task = None
         self.avail_task_cap: int = None
+        self.methods = methods
 
     def init_hist_task(self, historical_task_data):
         self.historical_task_data:HistoricalData = historical_task_data
@@ -881,18 +841,6 @@ class Sch_data(SingletonClass):
     def get_result_list_len(self):
         return len(self.result_list)
 
-
-class Avail_task(SingletonClass):
-    # only save useful data from features in result object
-    # methods
-    # task_id
-    # resources
-    # input size
-    # some input paremeters defined by user
-    def __init__(self):
-        pass
-
-    # maybe we dont need develop this class
 
 
 @dataclass
@@ -951,14 +899,6 @@ class available_task(SingletonClass):
                     raise KeyError(f"task id {i} not in task name {task_name}")
                     continue
                 self.task_ids[task_name].remove(i)
-                # if len(self.task_ids[task_name]) == 0:
-                #     self.task_ids.pop(task_name)
-            # if len(self.task_ids[task_name]) == 0:
-            #     # print type
-            #     print(type(self.task_names))
-            #     print(self.task_names)
-            #     print(task_name)
-            #     self.task_names.remove(task_name)
         elif task_queue == 'scheduled':
             task_id = [task_id] if isinstance(task_id, str) else task_id
             for i in task_id:
@@ -1079,13 +1019,11 @@ class HistoricalData:
                             # if value is None:
                             #     break
                         feature_values[feature] = value
-                    self.add_data(feature_values)
-
-
+                    self.add_data(feature_values)    
+    
 class TaskTimePredictor:
     methods: List[str]
     features: Dict[str, List[str]]
-    model_type: Literal["random_forest", "polynomial"] = "random_forest"
     
     _models: Dict[str, Pipeline] = {}
     _feature_scalers: Dict[str, StandardScaler] = {}
@@ -1093,26 +1031,295 @@ class TaskTimePredictor:
     # 缓存训练数据的统计信息
     _feature_stats: Dict[str, Dict[str, tuple]] = {}
     
-    def __init__(self, methods, features, model_type: Literal["random_forest", "polynomial"] = "random_forest"):
+    
+    
+    def __init__(self, methods, features, model_for_method:Dict[str,str] = {"run_calculator": "Polynomial", "run_sampling":"random_forest","train":"random_forest","evaluate":"random_forest"}):
         """
         初始化任务时间预测器
         
         Args:
             methods: 方法列表
             features: 特征列表
-            model_type: 模型类型，可选 "random_forest" 或 "polynomial"
+            model_for_method: 每个method的模型类型，可选 "random_forest" 或 "polynomial"
         """
-        self.model_type = model_type
         self.features = features
         self.methods = methods
-        for method in self.methods:
-            self._init_model(method)
             
-    def _init_model(self, method: str):
+        self.time_running_db = {}
+        self.dtype = np.dtype([
+            ('cpu', np.int32),
+            ('gpu', np.int32),
+            # ('node', 'U32'),
+            ('message_sizes', np.float64),
+            ('time_running', np.float64)
+        ])
+        
+        # 为每个方法初始化模型
+        for method, model_type in model_for_method.items():
+            self._init_model(method, model_type)
+        
+        # 为每个方法初始化数据库
+        for method in methods:
+            self.time_running_db[method] = np.array([], dtype=self.dtype)
+            
+        # 用于快速查找的索引
+        self.method_indices = {method: {} for method in methods}
+
+    def _create_index(self, method: str):
+        """创建索引以加速查询"""
+        data = self.time_running_db[method]
+        if len(data) == 0:
+            return
+            
+        # 创建资源配置到索引的映射
+        self.method_indices[method] = {
+            # (row['cpu'], row['gpu'], row['node']): idx 
+            (row['cpu'], row['gpu']): idx
+            for idx, row in enumerate(data)
+        }
+            
+            
+    def fill_time_running_database(self, node_resources: Dict[str, Dict], 
+                                 historical_data: Dict[str, List[Dict]]):
+        """填充运行时间数据库"""
+        for method in self.methods:
+            # 收集所有唯一的message_sizes值
+            message_sizes = set()
+            for task in historical_data[method]:
+                msg_size = task.get('message_sizes.inputs')
+                if msg_size is not None:
+                    message_sizes.add(float(msg_size))
+            # 获得节点中的最大资源
+            max_cpu = max(node["cpu"] for node in node_resources.values())
+            max_gpu = max(node["gpu"] for node in node_resources.values())
+            
+            # 生成所有可能的配置组合
+            records = []
+            # for node, resources in node_resources.items():
+            cpu_range = range(1, max_cpu + 1)
+            gpu_range = range(0, max_gpu + 1)
+            
+            for msg_size in message_sizes:
+                for cpu in cpu_range:
+                    for gpu in gpu_range:
+                        records.append((
+                            cpu, gpu, msg_size, np.nan
+                        ))
+            
+            # 使用numpy结构化数组存储数据
+            self.time_running_db[method] = np.array(records, dtype=self.dtype)
+            self._create_index(method)
+
+    def fill_features_from_new_task(self, node_resources: Dict[str, Dict], sch_task_list: Dict):
+        """从新任务中填充特征信息并合并到现有数据库"""
+        
+        for method in self.methods:
+            # 收集所有新的 message_sizes 值
+            message_sizes = set()
+            for task_id, task in sch_task_list.items():
+                if task['method'] == method:
+                    msg_size = task.get('message_sizes.inputs')
+                    if msg_size is not None:
+                        message_sizes.add(float(msg_size))
+            
+            # 获得节点中的最大资源
+            max_cpu = max(node["cpu"] for node in node_resources.values())
+            max_gpu = max(node["gpu"] for node in node_resources.values())
+            
+            # 生成所有可能的新配置组合
+            new_records = []
+            cpu_range = range(1, max_cpu + 1)
+            gpu_range = range(0, max_gpu + 1)
+            
+            for msg_size in message_sizes:
+                for cpu in cpu_range:
+                    for gpu in gpu_range:
+                        new_records.append((
+                            cpu, gpu, msg_size, np.nan
+                        ))
+            
+            # 将新记录转换为 numpy 结构化数组
+            new_array = np.array(new_records, dtype=self.dtype)
+            
+            # 合并到现有数据库中
+            if method in self.time_running_db:
+                existing_array = self.time_running_db[method]
+                # 使用 np.concatenate 合并
+                combined_array = np.concatenate((existing_array, new_array))
+                # 去重，确保唯一性
+                self.time_running_db[method] = np.unique(combined_array, axis=0)
+            else:
+                # 如果当前方法尚无记录，直接赋值
+                self.time_running_db[method] = new_array
+            
+            # 更新索引
+            self._create_index(method)
+
+                                
+    def add_runtime_records(self, historical_data: Dict[str, List[Dict]]):
+        """批量添加历史运行记录"""
+        for method, tasks in historical_data.items():
+            if not tasks:
+                continue
+                
+            data = self.time_running_db[method]
+            indices = self.method_indices[method]
+            
+            for task in tasks:
+                cpu = task['resources.cpu']
+                gpu = task['resources.gpu']
+                # node = task['resources']['node']
+                msg_size = task['message_sizes.inputs']
+                
+                # 使用索引快速定位记录
+                key = (cpu, gpu)
+                if key in indices:
+                    mask = (data['message_sizes'] == msg_size) & \
+                           (data['cpu'] == cpu) & \
+                           (data['gpu'] == gpu)
+                        #    (data['node'] == node)
+                    if np.any(mask):
+                        data['time_running'][mask] = task['time_running']
+                        
+    def fill_runtime_records_with_predictor(self, method=None):
+        """通过预测模型补充数据库缺失值"""
+        for method in self.methods:
+            if method not in self._models:
+                logger.info(f"predictor for method{method} not trained")
+                continue
+                
+            data = self.time_running_db[method]
+            
+            # 找到所有缺失值的位置
+            missing_mask = np.isnan(data['time_running'])
+            missing_indices = np.where(missing_mask)[0]
+            
+            if len(missing_indices) == 0:
+                logger.info(f"no NAN for method{method}")
+                continue
+                
+            # 准备特征数据进行批量预测
+            features = np.zeros((len(missing_indices), 3))
+            features[:, 0] = data['message_sizes'][missing_indices]
+            features[:, 1] = data['cpu'][missing_indices]
+            features[:, 2] = data['gpu'][missing_indices]
+            
+            try:
+                # 批量预测
+                predictions = np.expm1(self._models[method].predict(features))
+                # 填充预测值
+                data['time_running'][missing_indices] = predictions
+            except Exception as e:
+                logger.error(f"Prediction failed for method {method}: {str(e)}")
+                continue
+    
+    def visualize_runtime_trends(self, method: str, feature: str = 'message_sizes',
+                            control_features: Dict[str, Any] = None,
+                            show_scatter: bool = True):
+        """
+        使用matplotlib生成任务运行时间随特定特征变化的可视化图表
+        
+        Args:
+            method: 要可视化的方法名
+            feature: 要观察的特征名称 ('message_sizes', 'cpu', 'gpu')
+            control_features: 其他特征的固定值，例如 {'cpu': 4, 'gpu': 1}
+            show_scatter: 是否显示散点图
+        """
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        plt.style.use('seaborn')
+        
+        data = self.time_running_db[method]
+        if len(data) == 0:
+            logger.warning(f"No data available for method {method}")
+            return
+            
+        # 准备数据
+        valid_mask = ~np.isnan(data['time_running'])
+        valid_data = data[valid_mask]
+        
+        # 如果指定了控制特征，进一步过滤数据
+        if control_features:
+            for feat, value in control_features.items():
+                valid_data = valid_data[valid_data[feat] == value]
+                
+        if len(valid_data) == 0:
+            logger.warning("No valid data after filtering")
+            return
+                
+        # 创建图表
+        plt.figure(figsize=(10, 6))
+        
+        # 绘制散点图
+        if show_scatter:
+            plt.scatter(valid_data[feature], valid_data['time_running'], 
+                    alpha=0.5, label='Actual Data')
+        
+        # 对特征值排序并计算平均运行时间趋势线
+        unique_features = np.unique(valid_data[feature])
+        avg_times = []
+        for feat_value in unique_features:
+            mask = valid_data[feature] == feat_value
+            avg_time = np.mean(valid_data['time_running'][mask])
+            avg_times.append(avg_time)
+        
+        # 绘制趋势线
+        plt.plot(unique_features, avg_times, 'r-', linewidth=2, label='Average Trend')
+        
+        # 设置图表标题和标签
+        title = f'Runtime Trend for {method} by {feature}'
+        if control_features:
+            title += f'\nControl Features: {control_features}'
+        plt.title(title)
+        plt.xlabel(feature)
+        plt.ylabel('Runtime (s)')
+        
+        # 添加图例
+        plt.legend()
+        
+        # 添加网格
+        plt.grid(True, linestyle='--', alpha=0.7)
+        
+        # 优化布局
+        plt.tight_layout()
+        
+        # 显示图表
+        plt.show()
+
+        
+    @lru_cache(maxsize=10000) 
+    def get_runtime(self, cpu, gpu, msg_size, method) -> Optional[float]:
+        """获取运行时间"""
+        if method not in self.methods:
+            return None
+            
+        data = self.time_running_db[method]
+        indices = self.method_indices[method]
+        
+        # 使用索引快速查找匹配的资源配置
+        key = (cpu, gpu)
+        if key not in indices:
+            return None
+            
+        # 找到最接近的message_sizes值
+        mask = (data['cpu'] == cpu) & \
+                (data['gpu'] == gpu) 
+        matches = data[mask]
+        
+        if len(matches) == 0:
+            raise KeyError(f"get_runtime failed for features{(cpu, gpu, msg_size, method)}")
+            
+        # 找到最接近的message_sizes值对应的运行时间
+        idx = np.abs(matches['message_sizes'] - msg_size).argmin()
+        return float(matches[idx]['time_running'])
+
+            
+    def _init_model(self, method: str, model_type: Literal["random_forest", "polynomial"]):
         from sklearnex import patch_sklearn, unpatch_sklearn
         patch_sklearn()
         """为每个方法初始化模型pipeline"""
-        if self.model_type == "random_forest":
+        if model_type == "random_forest":
             model = RandomForestRegressor(
                 n_estimators=100,
                 max_depth=None,
@@ -1131,6 +1338,7 @@ class TaskTimePredictor:
             ('scaler', StandardScaler()),
             ('model', model)
         ])
+        
     def train(self, train_data: Dict[str, List[Dict]]) -> Dict[str, float]:
         """统一的训练入口，返回每个方法的训练得分"""
         scores = {}
@@ -1204,51 +1412,82 @@ class TaskTimePredictor:
         return self._predict_single(method, feature_tuple)
 
     
-    def estimate_ga_population(self, population: List, sch_task_list: Dict, 
-                            all_node: bool = False) -> None:
-        """批量预测种群中所有任务的运行时间"""
+    # def estimate_ga_population(self, population: List, sch_task_list: Dict, 
+    #                         all_node: bool = False) -> None:
+    #     """批量预测种群中所有任务的运行时间"""
         
-        all_tasks = np.concatenate([ind.task_array for ind in population])
+    #     all_tasks = np.concatenate([ind.task_array for ind in population])
         
-        method_to_tasks = {
-            method: all_tasks[all_tasks['name'] == method] 
-            for method in self.methods if method in self._models
-        }
+    #     method_to_tasks = {
+    #         method: all_tasks[all_tasks['name'] == method] 
+    #         for method in self.methods if method in self._models
+    #     }
         
-        for method, tasks in method_to_tasks.items():
-            if len(tasks) == 0:
-                continue
+    #     for method, tasks in method_to_tasks.items():
+    #         if len(tasks) == 0:
+    #             continue
             
-            try:
-                num_tasks = len(tasks)
-                # 一次性创建特征矩阵
-                X = np.zeros((num_tasks, 3), dtype=np.float32)
+    #         try:
+    #             num_tasks = len(tasks)
+    #             # 一次性创建特征矩阵
+    #             X = np.zeros((num_tasks, 3), dtype=np.float32)
                 
-                # 批量填充特征矩阵
-                task_ids = tasks['task_id']
-                X[:, 0] = [sch_task_list[tid].get('message_sizes.inputs', 1) for tid in task_ids]  # message sizes
-                X[:, 1] = tasks['cpu']  # CPU
-                X[:, 2] = tasks['gpu']  # GPU
+    #             # 批量填充特征矩阵
+    #             task_ids = tasks['task_id']
+    #             X[:, 0] = [sch_task_list[tid].get('message_sizes.inputs', 1) for tid in task_ids]  # message sizes
+    #             X[:, 1] = tasks['cpu']  # CPU
+    #             X[:, 2] = tasks['gpu']  # GPU
                 
-                # 批量预测
-                predictions = np.expm1(self._models[method].predict(X))
+    #             # 批量预测
+    #             predictions = np.expm1(self._models[method].predict(X))
                 
-                # 创建任务ID到预测结果的映射
-                prediction_map = dict(zip(task_ids, predictions))
+    #             # 创建任务ID到预测结果的映射
+    #             prediction_map = dict(zip(task_ids, predictions))
                 
-                # 使用向量化操作更新种群
-                for ind in population:
-                    method_mask = ind.task_array['name'] == method
-                    if np.any(method_mask):
-                        task_ids = ind.task_array[method_mask]['task_id']
-                        # 使用向量化操作更新运行时间
-                        update_indices = [ind._task_id_index[tid] for tid in task_ids]
-                        ind.task_array['total_runtime'][update_indices] = \
-                            [prediction_map[tid] for tid in task_ids]
+    #             # 使用向量化操作更新种群
+    #             for ind in population:
+    #                 method_mask = ind.task_array['name'] == method
+    #                 if np.any(method_mask):
+    #                     task_ids = ind.task_array[method_mask]['task_id']
+    #                     # 使用向量化操作更新运行时间
+    #                     update_indices = [ind._task_id_index[tid] for tid in task_ids]
+    #                     ind.task_array['total_runtime'][update_indices] = \
+    #                         [prediction_map[tid] for tid in task_ids]
                         
-            except Exception as e:
-                logger.error(f"Method {method} batch预测失败: {str(e)}")
-                logger.exception(e)
+    #         except Exception as e:
+    #             logger.error(f"Method {method} batch预测失败: {str(e)}")
+    #             logger.exception(e)
+    
+    def estimate_ga_population(self, population: List, sch_task_list: Dict, 
+                         all_node: bool = False) -> None:
+        """批量预测种群中所有任务的运行时间，优先使用数据库"""
+        # 按方法分组处理任务
+        method_tasks = defaultdict(list)
+        for ind in population:
+            for task in ind.task_array:
+                method_tasks[task['name']].append((task, ind))
+        
+        # 批量处理每个方法的任务
+        for method, tasks in method_tasks.items():
+            if method not in self.methods:
+                continue
+                
+            # 收集需要模型预测的任务
+            model_prediction_tasks = []
+            
+            for task, ind in tasks:
+                cpu = task['cpu']
+                gpu = task['gpu']
+                # 'node': task['node']
+                
+                msg_size = sch_task_list[task['task_id']].get(
+                    'message_sizes.inputs', 0)
+                    
+                runtime = self.get_runtime(cpu, gpu, msg_size, method)
+                
+                if runtime is not None:
+                    idx = ind._task_id_index[task['task_id']]
+                    ind.task_array[idx]['total_runtime'] = runtime
                 
     def _extract_features(self, task: Dict) -> Dict:
         """提取任务特征"""
@@ -1258,15 +1497,6 @@ class TaskTimePredictor:
                 value = self._get_nested_value(task, feature)
                 features[feature] = value
         return features
-    
-    # def _extract_features_from_sch_task(self, sch_task: Dict, 
-    #                                   resources: Dict) -> Dict:
-    #     """从调度任务中提取特征"""
-    #     features = sch_task.copy()
-    #     # 更新资源相关的特征
-    #     features['resources.cpu'] = resources['cpu']
-    #     features['resources.gpu'] = resources['gpu']
-    #     return features
     
     @staticmethod
     def _get_nested_value(dict_obj: Dict, key_path: str) -> Any:
@@ -1279,31 +1509,41 @@ class TaskTimePredictor:
                 return None
         return current
     
-    def save_models(self, path: str):
-        """保存训练好的模型"""
-        import joblib
-        save_dict = {
-            'models': self._models,
-            'feature_stats': self._feature_stats,
-            'model_type': self.model_type
-        }
-        joblib.dump(save_dict, path)
+    # def _extract_features_from_sch_task(self, sch_task: Dict, 
+    #                                   resources: Dict) -> Dict:
+    #     """从调度任务中提取特征"""
+    #     features = sch_task.copy()
+    #     # 更新资源相关的特征
+    #     features['resources.cpu'] = resources['cpu']
+    #     features['resources.gpu'] = resources['gpu']
+    #     return features
+
     
-    @classmethod
-    def load_models(cls, path: str, methods: List[str], 
-                   features: Dict[str, List[str]]):
-        """加载保存的模型"""
-        import joblib
-        saved_dict = joblib.load(path)
+    # def save_models(self, path: str):
+    #     """保存训练好的模型"""
+    #     import joblib
+    #     save_dict = {
+    #         'models': self._models,
+    #         'feature_stats': self._feature_stats,
+    #         'model_type': self.model_type
+    #     }
+    #     joblib.dump(save_dict, path)
+    
+    # @classmethod
+    # def load_models(cls, path: str, methods: List[str], 
+    #                features: Dict[str, List[str]]):
+    #     """加载保存的模型"""
+    #     import joblib
+    #     saved_dict = joblib.load(path)
         
-        predictor = cls(
-            methods=methods,
-            features=features,
-            model_type=saved_dict['model_type']
-        )
-        predictor._models = saved_dict['models']
-        predictor._feature_stats = saved_dict['feature_stats']
-        return predictor
+    #     predictor = cls(
+    #         methods=methods,
+    #         features=features,
+    #         model_type=saved_dict['model_type']
+    #     )
+    #     predictor._models = saved_dict['models']
+    #     predictor._feature_stats = saved_dict['feature_stats']
+    #     return predictor
 
 
 
@@ -1321,7 +1561,6 @@ class FCFSScheduler:
             value['gpu_devices'] = list(range(value['gpu']))
         self.at = at
         self.sch_data = sch_data
-        self.running_task = []
         self.running_task_node = defaultdict(list)
         self.current_time = 0
         
@@ -1432,8 +1671,154 @@ class FCFSScheduler:
                 
         return task_allocation
 
-class Back_Filing_Scheduler:
-    pass
+# class Back_Filing_Scheduler:
+#     pass
+
+
+@jit(nopython=True)
+def _calculate_completion_time(
+    task_cpu,        # shape: (n,), dtype: int32
+    task_gpu,        # shape: (n,), dtype: int32
+    task_runtime,    # shape: (n,), dtype: float64
+    running_finish_times,  # shape: (m,), dtype: float64
+    running_cpus,         # shape: (m,), dtype: int32
+    running_gpus,         # shape: (m,), dtype: int32
+    resources_cpu,   # int
+    resources_gpu,   # int
+    current_time,    # float
+):
+    """Numba优化版本的完成时间计算"""
+    # 预分配数组
+    n_tasks = len(task_cpu)
+    n_running = len(running_finish_times)
+    max_tasks = n_tasks + n_running
+    
+    ongoing_times = np.zeros(max_tasks, dtype=np.float64)
+    ongoing_cpus = np.zeros(max_tasks, dtype=np.int32)
+    ongoing_gpus = np.zeros(max_tasks, dtype=np.int32)
+    
+    # 初始化资源
+    avail_cpu = resources_cpu
+    avail_gpu = resources_gpu
+    task_count = 0
+    start_time = current_time
+    
+    # 添加运行中任务
+    for i in range(n_running):
+        ongoing_times[task_count] = running_finish_times[i]
+        ongoing_cpus[task_count] = running_cpus[i]
+        ongoing_gpus[task_count] = running_gpus[i]
+        avail_cpu -= ongoing_cpus[task_count]
+        avail_gpu -= ongoing_gpus[task_count]
+        task_count += 1
+        
+    # 记录资源使用变化点
+    changes_times = np.zeros(max_tasks * 2, dtype=np.float64)
+    changes_cpu = np.zeros(max_tasks * 2, dtype=np.int32)
+    changes_gpu = np.zeros(max_tasks * 2, dtype=np.int32)
+    changes_count = 0
+    
+    if task_count > 0:
+        changes_times[0] = current_time
+        changes_cpu[0] = resources_cpu - avail_cpu
+        changes_gpu[0] = resources_gpu - avail_gpu
+        changes_count += 1
+
+    # 处理任务数组
+    task_starts = np.zeros(n_tasks, dtype=np.float64)
+    task_ends = np.zeros(n_tasks, dtype=np.float64)
+    
+    for i in range(n_tasks):
+        required_cpu = task_cpu[i]
+        required_gpu = task_gpu[i]
+        duration = task_runtime[i]
+        
+        # 检查已完成任务
+        while task_count > 0 and ongoing_times[0] <= current_time:
+            avail_cpu += ongoing_cpus[0]
+            avail_gpu += ongoing_gpus[0]
+            
+            # 记录资源变化
+            changes_times[changes_count] = current_time 
+            changes_cpu[changes_count] = resources_cpu - avail_cpu
+            changes_gpu[changes_count] = resources_gpu - avail_gpu
+            changes_count += 1
+            
+            # 移除完成的任务
+            for j in range(task_count - 1):
+                ongoing_times[j] = ongoing_times[j + 1]
+                ongoing_cpus[j] = ongoing_cpus[j + 1]
+                ongoing_gpus[j] = ongoing_gpus[j + 1]
+            task_count -= 1
+            
+        # 等待资源
+        while avail_cpu < required_cpu or avail_gpu < required_gpu:
+            if task_count == 0:
+                return -1.0, -1.0, -1.0, task_starts, task_ends
+            current_time = ongoing_times[0]
+            avail_cpu += ongoing_cpus[0]
+            avail_gpu += ongoing_gpus[0]
+            
+            # 记录资源变化
+            changes_times[changes_count] = current_time
+            changes_cpu[changes_count] = resources_cpu - avail_cpu
+            changes_gpu[changes_count] = resources_gpu - avail_gpu
+            changes_count += 1
+            
+            # 移除第一个任务
+            for j in range(task_count - 1):
+                ongoing_times[j] = ongoing_times[j + 1]
+                ongoing_cpus[j] = ongoing_cpus[j + 1]
+                ongoing_gpus[j] = ongoing_gpus[j + 1]
+            task_count -= 1
+            
+        # 分配新任务
+        finish_time = current_time + duration
+        
+        # 二分查找插入位置
+        insert_pos = task_count
+        for j in range(task_count):
+            if ongoing_times[j] > finish_time:
+                insert_pos = j
+                break
+                
+        # 移动现有任务
+        for j in range(task_count, insert_pos, -1):
+            ongoing_times[j] = ongoing_times[j - 1]
+            ongoing_cpus[j] = ongoing_cpus[j - 1]
+            ongoing_gpus[j] = ongoing_gpus[j - 1]
+            
+        # 插入新任务
+        ongoing_times[insert_pos] = finish_time
+        ongoing_cpus[insert_pos] = required_cpu
+        ongoing_gpus[insert_pos] = required_gpu
+        task_count += 1
+        
+        # 记录任务时间
+        task_starts[i] = current_time
+        task_ends[i] = finish_time
+        
+        # 记录资源变化
+        changes_times[changes_count] = current_time
+        changes_cpu[changes_count] = resources_cpu - avail_cpu
+        changes_gpu[changes_count] = resources_gpu - avail_gpu
+        changes_count += 1
+        
+        avail_cpu -= required_cpu
+        avail_gpu -= required_gpu
+        
+    # 计算资源使用面积
+    resource_area = 0.0
+    for i in range(changes_count - 1):
+        time_delta = changes_times[i + 1] - changes_times[i]
+        area = (changes_cpu[i] + changes_gpu[i]) * time_delta
+        resource_area += area
+        
+    completion_time = task_ends[-1] - start_time if n_tasks > 0 else 0
+    total_runtime = completion_time
+    
+    return completion_time, resource_area, total_runtime, task_starts, task_ends
+
 
 # multiprocessing, class should be pickleable
 class evosch2:
@@ -1772,133 +2157,47 @@ class evosch2:
         ind.init_node_array()
 
 
-    def calculate_completion_time_record_with_running_task(
-        self,
-        resources: dict,
-        running_tasks: list, 
-        task_array: np.ndarray,
-        ind: individual
-    ) -> tuple[float, float, float]:
-        """计算完成时间、资源使用面积和总运行时间，并更新individual中的任务时间
+    def calculate_completion_time_record_with_running_task(self, resources, running_tasks, task_array, ind):
+        """计算完成时间并更新任务时间记录"""
         
-        Args:
-            resources: 节点资源配置
-            running_tasks: 正在运行的任务列表 
-            task_array: 按执行顺序排列的任务数组
-            ind: individual对象，用于更新任务时间信息
+        # 提取简单数组
+        task_cpu = np.array([task['cpu'] for task in task_array], dtype=np.int32)
+        task_gpu = np.array([task['gpu'] for task in task_array], dtype=np.int32)
+        task_runtime = np.array([task['total_runtime'] for task in task_array], dtype=np.float64)
         
-        Returns:
-            tuple: (完成时间, 资源使用面积, 总运行时间)
-        """
-        current_time = time.time()
-        start_time = current_time
-        
-        # 使用列表替代堆,因为任务数量通常较少
-        ongoing_tasks = []
-        avail_cpu = resources['cpu']
-        avail_gpu = resources['gpu']
-        
-        # 记录资源使用变化点
-        resource_changes = []
-        
-        # 添加运行中的任务
+        # 转换running_tasks为简单数组
         if running_tasks:
-            for task in running_tasks:
-                ongoing_tasks.append((
-                    task['finish_time'],
-                    task['resources']['cpu'],
-                    task['resources']['gpu'],
-                    task['task_id'],
-                    task['name'],
-                    task['resources']['node']
-                ))
-                avail_cpu -= task['resources']['cpu']
-                avail_gpu -= task['resources']['gpu']
-            
-            resource_changes.append((current_time, resources['cpu'] - avail_cpu, resources['gpu'] - avail_gpu))
-            # 预排序以优化后续操作
-            ongoing_tasks.sort()
-
-        task_id_to_idx = {task['task_id']: idx for idx, task in enumerate(ind.task_array)}
-
-        # 按数组顺序处理任务
-        for task in task_array:
-            required_cpu = task['cpu']
-            required_gpu = task['gpu']
-            
-            # 批量检查已完成任务
-            completed = []
-            for i, (finish_time, cpus, gpus, *_) in enumerate(ongoing_tasks):
-                if finish_time > current_time:
-                    break
-                completed.append(i)
-                avail_cpu += cpus
-                avail_gpu += gpus
-            
-            if completed:
-                resource_changes.append((current_time, resources['cpu'] - avail_cpu, resources['gpu'] - avail_gpu))
-                # 移除已完成任务
-                ongoing_tasks = [t for i, t in enumerate(ongoing_tasks) if i not in completed]
-
-            # 等待资源释放
-            while avail_cpu < required_cpu or avail_gpu < required_gpu:
-                if not ongoing_tasks:
-                    raise ValueError(
-                        f"Not enough resources for task. Required CPU:{required_cpu}, "
-                        f"GPU:{required_gpu}, Available CPU:{avail_cpu}, "
-                        f"GPU:{avail_gpu}, Total:{resources}"
-                    )
-                
-                finish_time, cpus, gpus, *_ = ongoing_tasks.pop(0)
-                current_time = finish_time
-                avail_cpu += cpus
-                avail_gpu += gpus
-                resource_changes.append((current_time, resources['cpu'] - avail_cpu, resources['gpu'] - avail_gpu))
-
-            # 分配资源给新任务
-            avail_cpu -= required_cpu
-            avail_gpu -= required_gpu
-            finish_time = current_time + task['total_runtime']
-            
-            # 二分插入以保持排序
-            bisect.insort(
-                ongoing_tasks,
-                (
-                    finish_time,
-                    required_cpu, 
-                    required_gpu,
-                    task['task_id'],
-                    task['name'],
-                    task['node']
-                )
-            )
-            
-            # 更新individual中的任务时间信息
-            idx = task_id_to_idx.get(task['task_id'], -1)
-            if idx != -1:
-                ind.task_array[idx]['start_time'] = current_time
-                ind.task_array[idx]['finish_time'] = finish_time
-            
-            resource_changes.append((current_time, resources['cpu'] - avail_cpu, resources['gpu'] - avail_gpu))
-
-        # 处理剩余任务
-        while ongoing_tasks:
-            finish_time, cpus, gpus, *_ = ongoing_tasks.pop(0)
-            avail_cpu += cpus
-            avail_gpu += gpus
-            current_time = finish_time
-            resource_changes.append((current_time, resources['cpu'] - avail_cpu, resources['gpu'] - avail_gpu))
-
-        # 计算资源使用面积
-        resource_area = 0
-        total_runtime = current_time - start_time
+            running_finish_times = np.array([task['finish_time'] for task in running_tasks], dtype=np.float64)
+            running_cpus = np.array([task['resources']['cpu'] for task in running_tasks], dtype=np.int32)
+            running_gpus = np.array([task['resources']['gpu'] for task in running_tasks], dtype=np.int32)
+        else:
+            running_finish_times = np.array([], dtype=np.float64)
+            running_cpus = np.array([], dtype=np.int32)
+            running_gpus = np.array([], dtype=np.int32)
         
-        # 计算资源使用面积
-        for i in range(len(resource_changes) - 1):
-            time_delta = resource_changes[i+1][0] - resource_changes[i][0]
-            resource_area += (resource_changes[i][1] + resource_changes[i][2]) * time_delta
-
-        return current_time - start_time, resource_area, total_runtime
+        # 调用numba优化函数
+        completion_time, resource_area, total_runtime, starts, ends = _calculate_completion_time(
+            task_cpu,
+            task_gpu,
+            task_runtime,
+            running_finish_times,
+            running_cpus,
+            running_gpus,
+            resources['cpu'],
+            resources['gpu'],
+            time.time()
+        )
+        
+        if completion_time < 0:
+            raise ValueError("Resource allocation failed")
+            
+        # 更新individual中的任务时间
+        for i, task in enumerate(task_array):
+            idx = ind._task_id_index[task['task_id']]
+            ind.task_array[idx]['start_time'] = starts[i]
+            ind.task_array[idx]['finish_time'] = ends[i]
+            
+        return completion_time, resource_area, total_runtime
 
     def calculate_total_time(self, ind: individual):
         total_time = 0
