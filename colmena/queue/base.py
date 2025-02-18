@@ -18,7 +18,8 @@ import time
 import proxystore.store
 
 from colmena.models import Result, SerializationMethod, ResourceRequirements
-from colmena.queue import evo_sch
+from .scheduler_core import SmartScheduler
+from .monitor import available_task
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ class ColmenaQueues:
 
         # register and init data class for scheduler
         # Extract historical data to estimate running time, and register estimate_methods. by YXX
-        self._available_tasks = evo_sch.available_task(self.methods)
+        self._available_tasks = available_task(self.methods)
         self._available_task_capacity = available_task_capacity
 
         self.queue_sch_lock = threading.Lock()
@@ -138,7 +139,7 @@ class ColmenaQueues:
 
         # tmp test
         if self.enable_smart_sch or self.enable_fcfs:
-            self.smart_sch: evo_sch.SmartScheduler = evo_sch.SmartScheduler(
+            self.smart_sch: SmartScheduler = SmartScheduler(
                 methods, available_task_capacity, available_resources, sch_config=None
             )
 
