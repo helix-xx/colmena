@@ -463,7 +463,7 @@ class ColmenaQueues:
             # 创建一个字典来保存每个节点的任务队列
             node_task_queues = {}
             for task in best_allocation:
-                node = task['resources']['node']
+                node = task['node']
                 if node not in node_task_queues:
                     node_task_queues[node] = []
                 node_task_queues[node].append(task)
@@ -495,7 +495,7 @@ class ColmenaQueues:
                         node_blocked[node] = True  # 标记这个节点为阻塞状态
                     else:
                         logger.info(
-                            f"submit task {task['task_id']} to queue on node {node}, remaining resources are {self.smart_sch.evo_sch.resources[node]}, consume resources are {task['resources']}"
+                            f"submit task {task['task_id']} to queue on node {node}, remaining resources are {self.smart_sch.evo_sch.resources[node]}, consume resources are {cpu_value} and {gpu_value}"
                         )
                         self.smart_sch.evo_sch.resources[node]['cpu'] -= cpu_value
                         self.smart_sch.evo_sch.resources[node]['gpu'] -= gpu_value
@@ -650,12 +650,14 @@ class ColmenaQueues:
         try:
             if future.exception():
                 logger.error(f"Scheduler failed: {future.exception()}")
-            elif allocation := future.result():
-                self.best_allocation = allocation
-                # 触发任务提交
-                self.trigger_submit_task(self.smart_sch.sch_data.avail_task.allocations) # best_allocation just a batch result, not all
             else:
-                logger.warning("Scheduler returned no allocation")
+                allocation = future.result()
+                if allocation is not None and len(allocation) > 0:  # 检查是否有分配结果
+                    self.best_allocation = allocation
+                    # 触发任务提交
+                    self.trigger_submit_task(self.smart_sch.sch_data.avail_task.allocations)
+                else:
+                    logger.warning("Scheduler returned no allocation")
         finally:
             self.is_scheduling.clear()
             

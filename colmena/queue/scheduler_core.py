@@ -252,7 +252,7 @@ class SmartScheduler:
         # run evo sch
             # with self.sch_lock: # 异步进行不需要加锁，每个调度算法都有自己的可调度任务
             all_tasks = self.sch_data.avail_task.get_all()
-            # self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
+            self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
             best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
             self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
             self.best_result = self.evo_sch.best_ind
