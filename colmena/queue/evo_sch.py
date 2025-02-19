@@ -385,7 +385,7 @@ class individual:
 
 # 请修改下面函数，除了running和task两个队列外，还需要增加queued_task。其中queued task为先前分配了执行顺序和资源的任务，但还未执行。请你基于下面函数，增加queud_task任务到模拟的任务运行队列中。queued task和task队列一样，有cpu资源使用量和gpu资源使用两和queued_task_runtime信息
 
-# @jit(nopython=True)
+@jit(nopython=True)
 def _calculate_task_resource_area(task_runtime, task_cpu, task_gpu):
     """计算任务的资源使用总面积"""
     resource_area = 0.0
@@ -395,7 +395,7 @@ def _calculate_task_resource_area(task_runtime, task_cpu, task_gpu):
         resource_area += area
     return resource_area
 
-# @jit(nopython=True)
+@jit(nopython=True)
 def _precalculate_fixed_tasks_state(
     queued_task_cpu,     # shape: (q,), dtype: int32
     queued_task_gpu,     # shape: (q,), dtype: int32
@@ -504,7 +504,7 @@ def _precalculate_fixed_tasks_state(
     return current_time, avail_cpu, avail_gpu, task_count, ongoing_times[:task_count], \
            ongoing_cpus[:task_count], ongoing_gpus[:task_count], queued_starts, queued_ends
 
-# @jit(nopython=True)
+@jit(nopython=True)
 def _calculate_completion_time_with_state(
     task_cpu,        # shape: (n,), dtype: int32
     task_gpu,        # shape: (n,), dtype: int32

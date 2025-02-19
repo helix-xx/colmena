@@ -286,7 +286,7 @@ class ColmenaQueues:
                 self.enough_resources_flag.set()
 
             # after restore resources, trigger submit task
-            if self.smart_sch.sch_data.avail_task.allocations:
+            if len(self.smart_sch.sch_data.avail_task.allocations)>0:
                 logger.info("restore resources and trigger submit task")
                 self.trigger_submit_task(self.smart_sch.sch_data.avail_task.allocations) # 释放资源了提交新的任务
             else:
