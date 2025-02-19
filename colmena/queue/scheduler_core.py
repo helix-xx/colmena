@@ -10,7 +10,7 @@ import numpy as np  # 用于数值计算
 logger = logging.getLogger(__name__)
 
 from colmena.models import Result
-from .evo_sch import evosch2, individual, _calculate_completion_time
+from .evo_sch import evosch2, individual
 from .fcfs_sch import FCFSScheduler
 from .monitor import available_task, HistoricalData, Sch_data
 
@@ -109,18 +109,18 @@ class SmartScheduler:
         empty_gpus = np.array([], dtype=np.int32)
         
         # 预热计算完成时间函数
-        _calculate_completion_time(
-            small_task_cpu,
-            small_task_gpu,
-            small_task_runtime,
-            empty_running,
-            empty_cpus,
-            empty_gpus,
-            4,
-            2,
-            0.0
-        )
-        print(f"Warmed up in {time.time() - start:.2f} seconds")
+        # _calculate_completion_time(
+        #     small_task_cpu,
+        #     small_task_gpu,
+        #     small_task_runtime,
+        #     empty_running,
+        #     empty_cpus,
+        #     empty_gpus,
+        #     4,
+        #     2,
+        #     0.0
+        # )
+        # print(f"Warmed up in {time.time() - start:.2f} seconds")
         
     
     def acquire_resources(self, key):
@@ -252,7 +252,7 @@ class SmartScheduler:
         # run evo sch
             # with self.sch_lock: # 异步进行不需要加锁，每个调度算法都有自己的可调度任务
             all_tasks = self.sch_data.avail_task.get_all()
-            self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
+            # self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
             best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
             self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
             self.best_result = self.evo_sch.best_ind

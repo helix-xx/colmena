@@ -6,6 +6,7 @@ import json  # 用于 JSON 文件的解析 `json.loads`
 from colmena.models import Result
 import logging  # 用于日志记录 `logger.warning`
 import uuid
+import numpy as np
 
 from .predictor import TaskTimePredictor 
 
@@ -94,11 +95,29 @@ class available_task(SingletonClass):
     def __init__(self, task_methods: list[str]):
         self.task_ids = {method: [] for method in task_methods}
         self.scheduled_task = {method: [] for method in task_methods}
-        self.allocations = []
-
-    def move_allocation_to_scheduled(self, allocation):
+        # 定义 task_array 的数据类型
+        self.dtype = [
+            ('name', 'U20'), 
+            ('task_id', 'U40'),
+            ('cpu', 'i4'),
+            ('gpu', 'i4'),
+            ('node', 'U10'),
+            ('total_runtime', 'f8'),
+            ('start_time', 'f8'),
+            ('finish_time', 'f8')
+        ]
+        self.allocations = np.zeros(0, dtype=self.dtype)  # 初始化 allocations 为空数组
+        
+    def move_allocation_to_scheduled(self, allocation: np.ndarray):
+        """
+        将分配的任务移动到调度任务中。
+        :param allocation: 分配的 task_array
+        """
         with self.move_lock:
-            self.allocations.extend(allocation)
+            if self.allocations.size == 0:
+                self.allocations = allocation
+            else:
+                self.allocations = np.concatenate([self.allocations, allocation])
 
     def move_available_to_scheduled(self, all_tasks):
         with self.move_lock:
@@ -108,7 +127,8 @@ class available_task(SingletonClass):
                 
     def remove_task_from_allocation(self, task):
         with self.move_lock:
-            self.allocations.remove(task)
+            mask = self.allocations['task_id'] != task['task_id']
+            self.allocations = self.allocations[mask]
             
     def add_task_id(self, task_name: str, task_id: Union[str, list[str]]):
         # if task_name not in self.task_names:

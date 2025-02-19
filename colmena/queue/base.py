@@ -14,6 +14,7 @@ import logging
 from attr import dataclass
 from collections import defaultdict
 import time
+import numpy as np
 
 import proxystore.store
 
@@ -452,7 +453,7 @@ class ColmenaQueues:
                 self._send_request(result.json(exclude_none=True), result.topic)
                 logger.info(f'Resources: result.resources is: {result.resources}')
     
-    def trigger_submit_task(self, best_allocation: list):
+    def trigger_submit_task(self, best_allocation: np.ndarray):
         with self.queue_sch_lock:
             # logger.info(
             #     f'Client trigger submit task, available task length is {len(best_allocation)}'
@@ -481,8 +482,8 @@ class ColmenaQueues:
                         continue  # 如果没有任务，跳过这个节点
 
                     task = tasks[0]
-                    cpu_value = int(task['resources']['cpu'])
-                    gpu_value = int(task['resources']['gpu'])
+                    cpu_value = int(task['cpu'])
+                    gpu_value = int(task['gpu'])
 
                     if (
                         self.smart_sch.evo_sch.resources[node]['cpu'] < cpu_value
@@ -509,18 +510,31 @@ class ColmenaQueues:
                             task_name=task['name'], task_id=task['task_id'], task_queue='scheduled'
                         )
 
+                        # predict_task = {
+                        #     'name': task['name'],
+                        #     'task_id': task['task_id'],
+                        #     'start_time': time.time(),
+                        #     'finish_time': None,
+                        #     'total_runtime': task['total_runtime'],
+                        #     'resources': task['resources'],
+                        #     'node': node,
+                        # }
+                        # predict_task['finish_time'] = (
+                        #     predict_task['start_time'] + predict_task['total_runtime']
+                        # )
+                        
+                        start_time = time.time()
                         predict_task = {
                             'name': task['name'],
                             'task_id': task['task_id'],
-                            'start_time': time.time(),
-                            'finish_time': None,
-                            'total_runtime': task['total_runtime'],
-                            'resources': task['resources'],
+                            'cpu': task['cpu'],
+                            'gpu': task['gpu'],
                             'node': node,
+                            'total_runtime': task['total_runtime'],
+                            'start_time': start_time,
+                            'finish_time': start_time + task['total_runtime'],
                         }
-                        predict_task['finish_time'] = (
-                            predict_task['start_time'] + predict_task['total_runtime']
-                        )
+                        
                         self.smart_sch.evo_sch.running_task_node[node].append(predict_task)
 
                         result = self.smart_sch.sch_data.pop_result_obj(task['task_id'])

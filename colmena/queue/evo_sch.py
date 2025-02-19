@@ -209,11 +209,197 @@ class individual:
 #     pass
 
 
-@jit(nopython=True)
-def _calculate_completion_time(
-    task_cpu,        # shape: (n,), dtype: int32
-    task_gpu,        # shape: (n,), dtype: int32
-    task_runtime,    # shape: (n,), dtype: float64
+# @jit(nopython=True)
+# def _calculate_completion_time(
+#     task_cpu,        # shape: (n,), dtype: int32
+#     task_gpu,        # shape: (n,), dtype: int32
+#     task_runtime,    # shape: (n,), dtype: float64
+#     running_finish_times,  # shape: (m,), dtype: float64
+#     running_cpus,         # shape: (m,), dtype: int32
+#     running_gpus,         # shape: (m,), dtype: int32
+#     resources_cpu,   # int
+#     resources_gpu,   # int
+#     current_time,    # float
+# ):
+#     """Numba优化版本的完成时间计算"""
+#     # 预分配数组
+#     n_tasks = len(task_cpu)
+#     n_running = len(running_finish_times)
+#     max_tasks = n_tasks + n_running
+    
+#     ongoing_times = np.zeros(max_tasks, dtype=np.float64)
+#     ongoing_cpus = np.zeros(max_tasks, dtype=np.int32)
+#     ongoing_gpus = np.zeros(max_tasks, dtype=np.int32)
+    
+#     # 初始化资源
+#     avail_cpu = resources_cpu
+#     avail_gpu = resources_gpu
+#     task_count = 0
+#     start_time = current_time
+    
+#     # 添加运行中任务
+#     for i in range(n_running):
+#         insert_pos = task_count
+#         for j in range(task_count):
+#             if ongoing_times[j] > running_finish_times[i]:
+#                 insert_pos = j
+#                 break
+#         # 移动现有任务
+#         for j in range(task_count, insert_pos, -1):
+#             ongoing_times[j] = ongoing_times[j - 1]
+#             ongoing_cpus[j] = ongoing_cpus[j - 1]
+#             ongoing_gpus[j] = ongoing_gpus[j - 1]
+        
+#         ongoing_times[insert_pos] = running_finish_times[i]
+#         ongoing_cpus[insert_pos] = running_cpus[i]
+#         ongoing_gpus[insert_pos] = running_gpus[i]
+#         avail_cpu -= ongoing_cpus[insert_pos]
+#         avail_gpu -= ongoing_gpus[insert_pos]
+#         task_count += 1
+        
+#     # 记录资源使用变化点
+#     changes_times = np.zeros(max_tasks * 2, dtype=np.float64)
+#     changes_cpu = np.zeros(max_tasks * 2, dtype=np.int32)
+#     changes_gpu = np.zeros(max_tasks * 2, dtype=np.int32)
+#     changes_count = 0
+    
+#     if task_count > 0:
+#         changes_times[0] = current_time
+#         changes_cpu[0] = resources_cpu - avail_cpu
+#         changes_gpu[0] = resources_gpu - avail_gpu
+#         changes_count += 1
+
+#     # 处理任务数组
+#     task_starts = np.zeros(n_tasks, dtype=np.float64)
+#     task_ends = np.zeros(n_tasks, dtype=np.float64)
+    
+#     for i in range(n_tasks):
+#         required_cpu = task_cpu[i]
+#         required_gpu = task_gpu[i]
+#         duration = task_runtime[i]
+        
+#         # 检查已完成任务
+#         while task_count > 0 and ongoing_times[0] <= current_time:
+#             avail_cpu += ongoing_cpus[0]
+#             avail_gpu += ongoing_gpus[0]
+            
+#             # 记录资源变化
+#             changes_times[changes_count] = current_time 
+#             changes_cpu[changes_count] = resources_cpu - avail_cpu
+#             changes_gpu[changes_count] = resources_gpu - avail_gpu
+#             changes_count += 1
+            
+#             # 移除完成的任务
+#             for j in range(task_count - 1):
+#                 ongoing_times[j] = ongoing_times[j + 1]
+#                 ongoing_cpus[j] = ongoing_cpus[j + 1]
+#                 ongoing_gpus[j] = ongoing_gpus[j + 1]
+#             task_count -= 1
+            
+#         # 等待资源
+#         while avail_cpu < required_cpu or avail_gpu < required_gpu:
+#             if task_count == 0:
+#                 return -1.0, -1.0, -1.0, task_starts, task_ends
+#             current_time = ongoing_times[0]
+#             avail_cpu += ongoing_cpus[0]
+#             avail_gpu += ongoing_gpus[0]
+            
+#             # 记录资源变化
+#             changes_times[changes_count] = current_time
+#             changes_cpu[changes_count] = resources_cpu - avail_cpu
+#             changes_gpu[changes_count] = resources_gpu - avail_gpu
+#             changes_count += 1
+            
+#             # 移除第一个任务
+#             for j in range(task_count - 1):
+#                 ongoing_times[j] = ongoing_times[j + 1]
+#                 ongoing_cpus[j] = ongoing_cpus[j + 1]
+#                 ongoing_gpus[j] = ongoing_gpus[j + 1]
+#             task_count -= 1
+            
+#         # 分配新任务
+#         finish_time = current_time + duration
+        
+#         # 二分查找插入位置
+#         insert_pos = task_count
+#         for j in range(task_count):
+#             if ongoing_times[j] > finish_time:
+#                 insert_pos = j
+#                 break
+                
+#         # 移动现有任务
+#         for j in range(task_count, insert_pos, -1):
+#             ongoing_times[j] = ongoing_times[j - 1]
+#             ongoing_cpus[j] = ongoing_cpus[j - 1]
+#             ongoing_gpus[j] = ongoing_gpus[j - 1]
+            
+#         # 插入新任务
+#         ongoing_times[insert_pos] = finish_time
+#         ongoing_cpus[insert_pos] = required_cpu
+#         ongoing_gpus[insert_pos] = required_gpu
+#         task_count += 1
+        
+#         # 记录任务时间
+#         task_starts[i] = current_time
+#         task_ends[i] = finish_time
+        
+#         avail_cpu -= required_cpu
+#         avail_gpu -= required_gpu
+        
+#         # 记录资源变化
+#         changes_times[changes_count] = current_time
+#         changes_cpu[changes_count] = resources_cpu - avail_cpu
+#         changes_gpu[changes_count] = resources_gpu - avail_gpu
+#         changes_count += 1
+    
+#     while task_count > 0:
+#         current_time = ongoing_times[0]
+            
+#         avail_cpu += ongoing_cpus[0]
+#         avail_gpu += ongoing_gpus[0]
+        
+#         # 记录资源变化
+#         changes_times[changes_count] = current_time
+#         changes_cpu[changes_count] = resources_cpu - avail_cpu
+#         changes_gpu[changes_count] = resources_gpu - avail_gpu
+#         changes_count += 1
+        
+#         # 移除完成的任务
+#         for j in range(task_count - 1):
+#             ongoing_times[j] = ongoing_times[j + 1]
+#             ongoing_cpus[j] = ongoing_cpus[j + 1]
+#             ongoing_gpus[j] = ongoing_gpus[j + 1]
+#         task_count -= 1
+        
+#     # 计算资源使用面积
+#     resource_area = 0.0
+#     for i in range(changes_count - 1):
+#         time_delta = changes_times[i + 1] - changes_times[i]
+#         area = (changes_cpu[i] + changes_gpu[i]) * time_delta
+#         resource_area += area
+        
+#     completion_time = current_time - start_time if n_tasks > 0 else 0
+#     total_runtime = completion_time
+    
+#     return completion_time, resource_area, total_runtime, task_starts, task_ends
+
+# 请修改下面函数，除了running和task两个队列外，还需要增加queued_task。其中queued task为先前分配了执行顺序和资源的任务，但还未执行。请你基于下面函数，增加queud_task任务到模拟的任务运行队列中。queued task和task队列一样，有cpu资源使用量和gpu资源使用两和queued_task_runtime信息
+
+# @jit(nopython=True)
+def _calculate_task_resource_area(task_runtime, task_cpu, task_gpu):
+    """计算任务的资源使用总面积"""
+    resource_area = 0.0
+    for i in range(len(task_runtime)):
+        duration = task_runtime[i]
+        area = (task_cpu[i] + task_gpu[i]) * duration
+        resource_area += area
+    return resource_area
+
+# @jit(nopython=True)
+def _precalculate_fixed_tasks_state(
+    queued_task_cpu,     # shape: (q,), dtype: int32
+    queued_task_gpu,     # shape: (q,), dtype: int32
+    queued_task_runtime, # shape: (q,), dtype: float64
     running_finish_times,  # shape: (m,), dtype: float64
     running_cpus,         # shape: (m,), dtype: int32
     running_gpus,         # shape: (m,), dtype: int32
@@ -221,29 +407,28 @@ def _calculate_completion_time(
     resources_gpu,   # int
     current_time,    # float
 ):
-    """Numba优化版本的完成时间计算"""
-    # 预分配数组
-    n_tasks = len(task_cpu)
+    """预计算固定任务(running和queued)的状态"""
+    n_queued = len(queued_task_cpu)
     n_running = len(running_finish_times)
-    max_tasks = n_tasks + n_running
+    max_tasks = n_queued + n_running
     
     ongoing_times = np.zeros(max_tasks, dtype=np.float64)
     ongoing_cpus = np.zeros(max_tasks, dtype=np.int32)
     ongoing_gpus = np.zeros(max_tasks, dtype=np.int32)
     
-    # 初始化资源
+    # 初始化资源和任务计数
     avail_cpu = resources_cpu
     avail_gpu = resources_gpu
     task_count = 0
-    start_time = current_time
     
-    # 添加运行中任务
+    # 添加running任务
     for i in range(n_running):
         insert_pos = task_count
         for j in range(task_count):
             if ongoing_times[j] > running_finish_times[i]:
                 insert_pos = j
                 break
+                
         # 移动现有任务
         for j in range(task_count, insert_pos, -1):
             ongoing_times[j] = ongoing_times[j - 1]
@@ -253,43 +438,22 @@ def _calculate_completion_time(
         ongoing_times[insert_pos] = running_finish_times[i]
         ongoing_cpus[insert_pos] = running_cpus[i]
         ongoing_gpus[insert_pos] = running_gpus[i]
-        avail_cpu -= ongoing_cpus[insert_pos]
-        avail_gpu -= ongoing_gpus[insert_pos]
         task_count += 1
-        
-    # 记录资源使用变化点
-    changes_times = np.zeros(max_tasks * 2, dtype=np.float64)
-    changes_cpu = np.zeros(max_tasks * 2, dtype=np.int32)
-    changes_gpu = np.zeros(max_tasks * 2, dtype=np.int32)
-    changes_count = 0
     
-    if task_count > 0:
-        changes_times[0] = current_time
-        changes_cpu[0] = resources_cpu - avail_cpu
-        changes_gpu[0] = resources_gpu - avail_gpu
-        changes_count += 1
-
-    # 处理任务数组
-    task_starts = np.zeros(n_tasks, dtype=np.float64)
-    task_ends = np.zeros(n_tasks, dtype=np.float64)
+    # 处理queued任务
+    queued_starts = np.zeros(n_queued, dtype=np.float64)
+    queued_ends = np.zeros(n_queued, dtype=np.float64)
     
-    for i in range(n_tasks):
-        required_cpu = task_cpu[i]
-        required_gpu = task_gpu[i]
-        duration = task_runtime[i]
+    for i in range(n_queued):
+        required_cpu = queued_task_cpu[i]
+        required_gpu = queued_task_gpu[i]
+        duration = queued_task_runtime[i]
         
         # 检查已完成任务
         while task_count > 0 and ongoing_times[0] <= current_time:
             avail_cpu += ongoing_cpus[0]
             avail_gpu += ongoing_gpus[0]
             
-            # 记录资源变化
-            changes_times[changes_count] = current_time 
-            changes_cpu[changes_count] = resources_cpu - avail_cpu
-            changes_gpu[changes_count] = resources_gpu - avail_gpu
-            changes_count += 1
-            
-            # 移除完成的任务
             for j in range(task_count - 1):
                 ongoing_times[j] = ongoing_times[j + 1]
                 ongoing_cpus[j] = ongoing_cpus[j + 1]
@@ -299,28 +463,21 @@ def _calculate_completion_time(
         # 等待资源
         while avail_cpu < required_cpu or avail_gpu < required_gpu:
             if task_count == 0:
-                return -1.0, -1.0, -1.0, task_starts, task_ends
+                return None  # 资源分配失败
             current_time = ongoing_times[0]
             avail_cpu += ongoing_cpus[0]
             avail_gpu += ongoing_gpus[0]
             
-            # 记录资源变化
-            changes_times[changes_count] = current_time
-            changes_cpu[changes_count] = resources_cpu - avail_cpu
-            changes_gpu[changes_count] = resources_gpu - avail_gpu
-            changes_count += 1
-            
-            # 移除第一个任务
             for j in range(task_count - 1):
                 ongoing_times[j] = ongoing_times[j + 1]
                 ongoing_cpus[j] = ongoing_cpus[j + 1]
                 ongoing_gpus[j] = ongoing_gpus[j + 1]
             task_count -= 1
-            
+        
         # 分配新任务
         finish_time = current_time + duration
         
-        # 二分查找插入位置
+        # 查找插入位置
         insert_pos = task_count
         for j in range(task_count):
             if ongoing_times[j] > finish_time:
@@ -332,56 +489,132 @@ def _calculate_completion_time(
             ongoing_times[j] = ongoing_times[j - 1]
             ongoing_cpus[j] = ongoing_cpus[j - 1]
             ongoing_gpus[j] = ongoing_gpus[j - 1]
-            
-        # 插入新任务
+        
         ongoing_times[insert_pos] = finish_time
         ongoing_cpus[insert_pos] = required_cpu
         ongoing_gpus[insert_pos] = required_gpu
         task_count += 1
         
-        # 记录任务时间
+        queued_starts[i] = current_time
+        queued_ends[i] = finish_time
+        
+        avail_cpu -= required_cpu
+        avail_gpu -= required_gpu
+    
+    return current_time, avail_cpu, avail_gpu, task_count, ongoing_times[:task_count], \
+           ongoing_cpus[:task_count], ongoing_gpus[:task_count], queued_starts, queued_ends
+
+# @jit(nopython=True)
+def _calculate_completion_time_with_state(
+    task_cpu,        # shape: (n,), dtype: int32
+    task_gpu,        # shape: (n,), dtype: int32
+    task_runtime,    # shape: (n,), dtype: float64
+    current_time,    # float
+    avail_cpu,       # int
+    avail_gpu,       # int
+    task_count,      # int
+    ongoing_times,   # shape: (k,), dtype: float64
+    ongoing_cpus,    # shape: (k,), dtype: int32
+    ongoing_gpus,    # shape: (k,), dtype: int32
+    resources_cpu,   # int
+    resources_gpu,   # int
+):
+    """使用预计算状态的完成时间计算"""
+    n_tasks = len(task_cpu)
+    max_tasks = n_tasks + len(ongoing_times)
+    
+    # 创建新的状态数组
+    new_ongoing_times = np.zeros(max_tasks, dtype=np.float64)
+    new_ongoing_cpus = np.zeros(max_tasks, dtype=np.int32)
+    new_ongoing_gpus = np.zeros(max_tasks, dtype=np.int32)
+    
+    # 复制现有状态
+    new_ongoing_times[:task_count] = ongoing_times
+    new_ongoing_cpus[:task_count] = ongoing_cpus
+    new_ongoing_gpus[:task_count] = ongoing_gpus
+    
+    start_time = current_time
+    task_starts = np.zeros(n_tasks, dtype=np.float64)
+    task_ends = np.zeros(n_tasks, dtype=np.float64)
+    
+    # 处理新任务
+    for i in range(n_tasks):
+        required_cpu = task_cpu[i]
+        required_gpu = task_gpu[i]
+        duration = task_runtime[i]
+        
+        # 检查已完成任务
+        while task_count > 0 and new_ongoing_times[0] <= current_time:
+            avail_cpu += new_ongoing_cpus[0]
+            avail_gpu += new_ongoing_gpus[0]
+            
+            for j in range(task_count - 1):
+                new_ongoing_times[j] = new_ongoing_times[j + 1]
+                new_ongoing_cpus[j] = new_ongoing_cpus[j + 1]
+                new_ongoing_gpus[j] = new_ongoing_gpus[j + 1]
+            task_count -= 1
+            
+        # 等待资源
+        while avail_cpu < required_cpu or avail_gpu < required_gpu:
+            if task_count == 0:
+                return -1.0, 0, task_starts, task_ends
+            current_time = new_ongoing_times[0]
+            avail_cpu += new_ongoing_cpus[0]
+            avail_gpu += new_ongoing_gpus[0]
+            
+            for j in range(task_count - 1):
+                new_ongoing_times[j] = new_ongoing_times[j + 1]
+                new_ongoing_cpus[j] = new_ongoing_cpus[j + 1]
+                new_ongoing_gpus[j] = new_ongoing_gpus[j + 1]
+            task_count -= 1
+        
+        # 分配新任务
+        finish_time = current_time + duration
+        
+        # 查找插入位置
+        insert_pos = task_count
+        for j in range(task_count):
+            if new_ongoing_times[j] > finish_time:
+                insert_pos = j
+                break
+                
+        # 移动现有任务
+        for j in range(task_count, insert_pos, -1):
+            new_ongoing_times[j] = new_ongoing_times[j - 1]
+            new_ongoing_cpus[j] = new_ongoing_cpus[j - 1]
+            new_ongoing_gpus[j] = new_ongoing_gpus[j - 1]
+        
+        new_ongoing_times[insert_pos] = finish_time
+        new_ongoing_cpus[insert_pos] = required_cpu
+        new_ongoing_gpus[insert_pos] = required_gpu
+        task_count += 1
+        
         task_starts[i] = current_time
         task_ends[i] = finish_time
         
         avail_cpu -= required_cpu
         avail_gpu -= required_gpu
         
-        # 记录资源变化
-        changes_times[changes_count] = current_time
-        changes_cpu[changes_count] = resources_cpu - avail_cpu
-        changes_gpu[changes_count] = resources_gpu - avail_gpu
-        changes_count += 1
-    
+    # 计算空闲资源面积
+    resources_released_weighted = 0
+    resources_released_weighted += (avail_cpu + avail_gpu) * current_time
     while task_count > 0:
-        current_time = ongoing_times[0]
-            
-        avail_cpu += ongoing_cpus[0]
-        avail_gpu += ongoing_gpus[0]
-        
-        # 记录资源变化
-        changes_times[changes_count] = current_time
-        changes_cpu[changes_count] = resources_cpu - avail_cpu
-        changes_gpu[changes_count] = resources_gpu - avail_gpu
-        changes_count += 1
+        current_time = new_ongoing_times[0]
+        avail_cpu += new_ongoing_cpus[0]
+        avail_gpu += new_ongoing_gpus[0]
+        resources_released_weighted += (avail_cpu + avail_gpu) * current_time
         
         # 移除完成的任务
         for j in range(task_count - 1):
-            ongoing_times[j] = ongoing_times[j + 1]
-            ongoing_cpus[j] = ongoing_cpus[j + 1]
-            ongoing_gpus[j] = ongoing_gpus[j + 1]
+            new_ongoing_times[j] = new_ongoing_times[j + 1]
+            new_ongoing_cpus[j] = new_ongoing_cpus[j + 1]
+            new_ongoing_gpus[j] = new_ongoing_gpus[j + 1]
         task_count -= 1
-        
-    # 计算资源使用面积
-    resource_area = 0.0
-    for i in range(changes_count - 1):
-        time_delta = changes_times[i + 1] - changes_times[i]
-        area = (changes_cpu[i] + changes_gpu[i]) * time_delta
-        resource_area += area
-        
-    completion_time = current_time - start_time if n_tasks > 0 else 0
-    total_runtime = completion_time
     
-    return completion_time, resource_area, total_runtime, task_starts, task_ends
+    resources_released_weighted = current_time * (avail_cpu + avail_gpu) - resources_released_weighted
+    
+    completion_time = current_time - start_time if n_tasks > 0 else 0
+    return completion_time, resources_released_weighted, task_starts, task_ends
 
 
 # multiprocessing, class should be pickleable
@@ -608,6 +841,7 @@ class evosch2:
         total_cpu_time = defaultdict(float)
         total_gpu_time = defaultdict(float)
         completion_time = defaultdict(float)
+        total_runtime = defaultdict(float)
         
         for node in self.node_resources.keys():
             node_mask = ind.task_array['node'] == node
@@ -615,14 +849,13 @@ class evosch2:
             
             total_cpu_time[node], total_gpu_time[node] = self.calc_time(node_tasks)
             
-            completion_time[node], _, _ = self.calculate_completion_time_record_with_running_task(
+            completion_time[node], _, total_runtime[node] = self.calculate_completion_time_record_with_running_task(
                 self.node_resources[node],
-                self.running_task_node[node],
                 node_tasks,
                 ind
             )
 
-        return total_cpu_time, total_gpu_time, completion_time
+        return total_cpu_time, total_gpu_time, completion_time, total_runtime
 
     def load_balance(self, ind: individual) -> None:
         """平衡各节点的负载
@@ -633,16 +866,16 @@ class evosch2:
         if not isinstance(ind, individual):
             raise ValueError("load_balance input is not individual")
 
-        total_cpu_time, total_gpu_time, completion_time = self.calc_utilization(ind)
-        diff_cur = max(completion_time.values()) - min(completion_time.values())
-        diff_pre = max(completion_time.values())
-        max_pre = max(completion_time.values())
-        max_node = max(completion_time, key=completion_time.get)
-        min_node = min(completion_time, key=completion_time.get)
+        total_cpu_time, total_gpu_time, completion_time, end_time = self.calc_utilization(ind)
+        diff_cur = max(end_time.values()) - min(end_time.values())
+        diff_pre = max(end_time.values())
+        max_pre = max(end_time.values())
+        max_node = max(end_time, key=end_time.get)
+        min_node = min(end_time, key=end_time.get)
 
         while diff_cur < diff_pre:
-            max_node = max(completion_time, key=completion_time.get)
-            min_node = min(completion_time, key=completion_time.get)
+            max_node = max(end_time, key=end_time.get)
+            min_node = min(end_time, key=end_time.get)
 
             best_task_idx = None
             best_diff = float('inf')
@@ -693,23 +926,21 @@ class evosch2:
                 max_node_mask = ind.task_array['node'] == max_node
                 min_node_mask = ind.task_array['node'] == min_node
                 
-                completion_time[max_node], _, _ = self.calculate_completion_time_record_with_running_task(
+                completion_time[max_node], _, end_time[max_node] = self.calculate_completion_time_record_with_running_task(
                     self.node_resources[max_node],
-                    self.running_task_node[max_node],
                     ind.task_array[max_node_mask],
                     ind
                 )
                 
-                completion_time[min_node], _, _ = self.calculate_completion_time_record_with_running_task(
+                completion_time[min_node], _, end_time[min_node] = self.calculate_completion_time_record_with_running_task(
                     self.node_resources[min_node],
-                    self.running_task_node[min_node],
                     ind.task_array[min_node_mask],
                     ind
                 )
 
                 diff_pre = diff_cur
-                max_now = max(completion_time.values())
-                diff_cur = max(completion_time.values()) - min(completion_time.values())
+                max_now = max(end_time.values())
+                diff_cur = max(end_time.values()) - min(end_time.values())
                 
                 if max_now > max_pre:
                     break
@@ -721,45 +952,55 @@ class evosch2:
         ind.init_node_array()
 
 
-    def calculate_completion_time_record_with_running_task(self, resources, running_tasks, task_array, ind):
+    def calculate_completion_time_record_with_running_task(self, resources, task_array, ind):
         """计算完成时间并更新任务时间记录"""
+        if len(task_array) == 0:
+            return 0.0, 0, 0.0
+        node = task_array[0]['node']
+        if self.fixed_state[node] is None:
+            raise ValueError("Fixed state not calculated")
         
         # 提取简单数组
         task_cpu = np.array([task['cpu'] for task in task_array], dtype=np.int32)
         task_gpu = np.array([task['gpu'] for task in task_array], dtype=np.int32)
         task_runtime = np.array([task['total_runtime'] for task in task_array], dtype=np.float64)
         
-        # 转换running_tasks为简单数组
-        if running_tasks:
-            running_finish_times = np.array([task['finish_time'] for task in running_tasks], dtype=np.float64)
-            running_cpus = np.array([task['resources']['cpu'] for task in running_tasks], dtype=np.int32)
-            running_gpus = np.array([task['resources']['gpu'] for task in running_tasks], dtype=np.int32)
-        else:
-            running_finish_times = np.array([], dtype=np.float64)
-            running_cpus = np.array([], dtype=np.int32)
-            running_gpus = np.array([], dtype=np.int32)
+        # 使用预计算状态计算完成时间
+        try:
+            completion_time, resources_released_weighted, starts, ends = _calculate_completion_time_with_state(
+                task_cpu,
+                task_gpu,
+                task_runtime,
+                self.fixed_state[node][0],  # current_time
+                self.fixed_state[node][1],  # avail_cpu
+                self.fixed_state[node][2],  # avail_gpu
+                self.fixed_state[node][3],  # task_count
+                self.fixed_state[node][4],  # ongoing_times
+                self.fixed_state[node][5],  # ongoing_cpus
+                self.fixed_state[node][6],  # ongoing_gpus
+                resources['cpu'],
+                resources['gpu']
+            )
+        except Exception as e:
+            print(f"Error occurred during resource allocation: {e}")
+            print(self.fixed_state[node], task_cpu,task_gpu,task_runtime)
+            raise e
         
-        # 调用numba优化函数
-        completion_time, resource_area, total_runtime, starts, ends = _calculate_completion_time(
-            task_cpu,
-            task_gpu,
-            task_runtime,
-            running_finish_times,
-            running_cpus,
-            running_gpus,
-            resources['cpu'],
-            resources['gpu'],
-            time.time()
-        )
-        
-        if completion_time < 0:
+        if completion_time <= 0:
+            print(task_array)
+            print(self.fixed_state)
             raise ValueError("Resource allocation failed")
+        
+        # 计算资源使用面积    
+        resource_area = _calculate_task_resource_area(task_runtime, task_cpu, task_gpu)
             
         # 更新individual中的任务时间
         for i, task in enumerate(task_array):
             idx = ind._task_id_index[task['task_id']]
             ind.task_array[idx]['start_time'] = starts[i]
             ind.task_array[idx]['finish_time'] = ends[i]
+            
+        total_runtime = np.max(ends)
             
         return completion_time, resource_area, total_runtime
 
@@ -788,10 +1029,15 @@ class evosch2:
         for i, node in enumerate(unique_nodes):
             node_mask = ind.task_array['node'] == node
             node_tasks = ind.task_array[node_mask]
+            # # 添加空任务检查
+            # if len(node_tasks) == 0:
+            #     completion_times[i] = 0
+            #     resource_areas[i] = 0
+            #     total_runtimes[i] = 0
+            #     continue
             
             completion_time, resource_area, total_runtime = self.calculate_completion_time_record_with_running_task(
                 self.node_resources[node],
-                self.running_task_node[node],
                 node_tasks,
                 ind  # 传入individual对象
             )
@@ -1209,16 +1455,6 @@ class evosch2:
             self.opt1(ind)
             self.opt2(ind)
 
-    def process_individual_mutate(self, population, ind1, ind2, crossover_rate=0):
-        self.mutate_resources(population, ind1)
-        self.mutate_resources(population, ind2)
-
-        self.mutate_seq(population, ind1)
-        self.mutate_seq(population, ind2)
-
-        self.crossover_pmx(population, ind1, ind2)
-        self.crossover_arith_ave(population, ind1, ind2)
-
 
     def clean_population(self, population):
         process = psutil.Process()
@@ -1248,18 +1484,23 @@ class evosch2:
             population = population[:num_generations_node]
             random.shuffle(population)
             size = len(population)
-
+            task_nums = len(population[0].task_array)
             for i in range(size // 2):
                 ind1 = population[i]
                 ind2 = population[size - i - 1]
-
-                # if new_score == score:
-                self.process_individual_mutate(population, ind1, ind2)
+                if task_nums == 1:
+                    self.mutate_seq(population, ind1)
+                    self.mutate_seq(population, ind2)
+                    self.crossover_pmx(population, ind1, ind2)
+                    self.opt2(population, ind1)
+                    self.opt2(population, ind2)
+                    
+                self.mutate_resources(population, ind1)
+                self.mutate_resources(population, ind2)
+                self.crossover_arith_ave(population, ind1, ind2)
 
                 self.opt1(population, ind1)
                 self.opt1(population, ind2)
-                self.opt2(population, ind1)
-                self.opt2(population, ind2)
                 self.opt_gpu(population, ind1)
                 self.opt_gpu(population, ind2)
 
@@ -1304,6 +1545,49 @@ class evosch2:
         # 更新索引映射
         a_ind.update_task_id_index()
         
+    def precalculate_fixed_state(self, running_tasks_all, queued_tasks_all):
+        """预计算固定任务状态"""
+        self.fixed_state = {}
+        for node in self.node_resources.keys():
+            running_tasks = running_tasks_all[node]
+            queued_tasks = queued_tasks_all[queued_tasks_all['node'] == node]
+            
+            # 转换running_tasks为数组
+            if running_tasks:
+                running_finish_times = np.array([task['finish_time'] for task in running_tasks], dtype=np.float64)
+                running_cpus = np.array([task['cpu'] for task in running_tasks], dtype=np.int32)
+                running_gpus = np.array([task['gpu'] for task in running_tasks], dtype=np.int32)
+            else:
+                running_finish_times = np.array([], dtype=np.float64)
+                running_cpus = np.array([], dtype=np.int32)
+                running_gpus = np.array([], dtype=np.int32)
+                
+            # 转换queued_tasks为数组
+            if queued_tasks:
+                queued_task_cpu = np.array([task['cpu'] for task in queued_tasks], dtype=np.int32)
+                queued_task_gpu = np.array([task['gpu'] for task in queued_tasks], dtype=np.int32)
+                queued_task_runtime = np.array([task['total_runtime'] for task in queued_tasks], dtype=np.float64)
+            else:
+                queued_task_cpu = np.array([], dtype=np.int32)
+                queued_task_gpu = np.array([], dtype=np.int32)
+                queued_task_runtime = np.array([], dtype=np.float64)
+                
+            # 预计算状态
+            self.fixed_state[node] = _precalculate_fixed_tasks_state(
+                queued_task_cpu,
+                queued_task_gpu,
+                queued_task_runtime,
+                running_finish_times,
+                running_cpus,
+                running_gpus,
+                self.node_resources[node]['cpu'],
+                self.node_resources[node]['gpu'],
+                0
+            )
+            
+        if self.fixed_state is None:
+            raise ValueError("Fixed tasks resource allocation failed")
+        
     def run_ga(
         self,
         all_tasks:list[dict[str, int]],
@@ -1324,6 +1608,8 @@ class evosch2:
         self.sch_data.Task_time_predictor.fill_runtime_records_with_predictor()
         self.write_log(f"Predictor filled with new task features, consuming time: {time.time() - start_time:.2f} seconds")
         
+        self.precalculate_fixed_state(self.running_task_node, self.sch_data.avail_task.allocations)
+        
         # run no record task
         ind = self.detect_no_his_task(all_tasks)
         if ind is not None and len(ind.task_array) > 0:
@@ -1342,10 +1628,10 @@ class evosch2:
         self.population = [self.population[i] for i in np.argsort(scores)[::-1]]
 
         # only one task , submit directly
-        if self.at.get_total_nums(all_tasks) == 1:
-            logger.info(f"Only one task, submit directly")
-            self.best_ind = self.population[-1]  # predifined resources at last in list
-            return self.best_ind.task_allocation
+        # if self.at.get_total_nums(all_tasks) == 1:
+        #     logger.info(f"Only one task, submit directly")
+        #     self.best_ind = self.population[-1]  # predifined resources at last in list
+        #     return self.best_ind.task_array
 
         score = self.population[0].score
         logger.info(f"initial score is {score}")
@@ -1397,7 +1683,8 @@ class evosch2:
         # best ind global
         best_ind = max(self.population, key=lambda ind: ind.score)
         self.best_ind = best_ind
-        best_allocation = best_ind.task_allocation
+        # best_allocation = best_ind.task_allocation
+        best_allocation = best_ind.task_array
         self.write_log("\nFinal Results:")
         self.write_log(f"scores of all individuals: {scores}")
         self.write_log(f"Best individual score: {best_ind.score}")
