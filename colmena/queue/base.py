@@ -649,7 +649,7 @@ class ColmenaQueues:
         """调度完成后的回调函数"""
         try:
             if future.exception():
-                logger.error(f"Scheduler failed: {future.exception()}")
+                logger.error(f"Scheduler failed: {future.exception()}", exc_info=True)
             else:
                 allocation = future.result()
                 if allocation is not None and len(allocation) > 0:  # 检查是否有分配结果

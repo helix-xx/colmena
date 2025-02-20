@@ -1490,7 +1490,7 @@ class evosch2:
             for i in range(size // 2):
                 ind1 = population[i]
                 ind2 = population[size - i - 1]
-                if task_nums == 1:
+                if task_nums > 1:
                     self.mutate_seq(population, ind1)
                     self.mutate_seq(population, ind2)
                     self.crossover_pmx(population, ind1, ind2)
