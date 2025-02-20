@@ -1473,10 +1473,13 @@ class evosch2:
         self.write_log(f"Initial allocation: {population[0].task_array}")
 
         # 检查边界条件
-        if len(population) < 1 or len(population[0].task_array) < 2:
-            self.write_log(f"Node {node}: No population, or only one task. Skipping...")
+        task_nums = len(population[0].task_array)
+        if len(population) < 1:
+            self.write_log(f"Node {node}: No population. Return")
             return (node, population[0])
-
+        if task_nums < 1:
+            self.write_log(f"No Task. Return")
+            return (node, None)
         score = 0
         new_score = 0
 
@@ -1484,7 +1487,6 @@ class evosch2:
             population = population[:num_generations_node]
             random.shuffle(population)
             size = len(population)
-            task_nums = len(population[0].task_array)
             for i in range(size // 2):
                 ind1 = population[i]
                 ind2 = population[size - i - 1]
@@ -1553,7 +1555,7 @@ class evosch2:
             queued_tasks = queued_tasks_all[queued_tasks_all['node'] == node]
             
             # 转换running_tasks为数组
-            if running_tasks:
+            if running_tasks is not None and len(running_tasks)>0:
                 running_finish_times = np.array([task['finish_time'] for task in running_tasks], dtype=np.float64)
                 running_cpus = np.array([task['cpu'] for task in running_tasks], dtype=np.int32)
                 running_gpus = np.array([task['gpu'] for task in running_tasks], dtype=np.int32)
@@ -1563,7 +1565,7 @@ class evosch2:
                 running_gpus = np.array([], dtype=np.int32)
                 
             # 转换queued_tasks为数组
-            if queued_tasks:
+            if queued_tasks is not None and len(queued_tasks)>0:
                 queued_task_cpu = np.array([task['cpu'] for task in queued_tasks], dtype=np.int32)
                 queued_task_gpu = np.array([task['gpu'] for task in queued_tasks], dtype=np.int32)
                 queued_task_runtime = np.array([task['total_runtime'] for task in queued_tasks], dtype=np.float64)
@@ -1613,7 +1615,7 @@ class evosch2:
         # run no record task
         ind = self.detect_no_his_task(all_tasks)
         if ind is not None and len(ind.task_array) > 0:
-            return ind.task_allocation
+            return ind.task_array
 
         self.population = self.generate_population_all(all_tasks=all_tasks, population_size=num_generations_all)
         
