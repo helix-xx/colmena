@@ -673,9 +673,10 @@ class evosch2:
             f.write(f"GA Optimization Started at {self.timestamp}\n")
             f.write("=" * 80 + "\n")
 
-    def write_log(self, message):
+    def write_log(self, *messages):
         with open(self.log_path, 'a') as f:
-            f.write(f"{datetime.datetime.now().strftime('%H:%M:%S')} - {message}\n")
+            for message in messages:
+                f.write(f"{datetime.datetime.now().strftime('%H:%M:%S')} - {message}\n")
 
     # allocate and recover resources, with threadlock
     def allocate_resources(self, result_obj:Result):
@@ -982,13 +983,15 @@ class evosch2:
                 resources['gpu']
             )
         except Exception as e:
-            print(f"Error occurred during resource allocation: {e}")
-            print(self.fixed_state[node], task_cpu,task_gpu,task_runtime)
+            self.write_log("_calculate_completion_time_with_state error")
+            self.write_log(f"Error occurred during resource allocation: {e}")
+            self.write_log(self.fixed_state[node], task_cpu,task_gpu,task_runtime)
             raise e
         
         if completion_time <= 0:
-            print(task_array)
-            print(self.fixed_state)
+            self.write_log("_calculate_completion_time_with_state error")
+            self.write_log(task_array)
+            self.write_log(self.fixed_state)
             raise ValueError("Resource allocation failed")
         
         # 计算资源使用面积    
@@ -1584,7 +1587,7 @@ class evosch2:
                 running_gpus,
                 self.node_resources[node]['cpu'],
                 self.node_resources[node]['gpu'],
-                0
+                time.time()
             )
             
         if self.fixed_state is None:
