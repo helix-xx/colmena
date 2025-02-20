@@ -617,6 +617,43 @@ def _calculate_completion_time_with_state(
     return completion_time, resources_released_weighted, task_starts, task_ends
 
 
+# 封装两个 numba 函数，添加缓存
+@lru_cache(maxsize=512)
+def cached_calculate_completion_time_with_state(
+    task_cpu_tuple, task_gpu_tuple, task_runtime_tuple,
+    current_time, avail_cpu, avail_gpu,
+    task_count, ongoing_times_tuple, ongoing_cpus_tuple, ongoing_gpus_tuple,
+    resources_cpu, resources_gpu
+):
+    # 将 tuple 转为 numpy 数组
+    task_cpu = np.array(task_cpu_tuple, dtype=np.int32)
+    task_gpu = np.array(task_gpu_tuple, dtype=np.int32)
+    task_runtime = np.array(task_runtime_tuple, dtype=np.float64)
+    ongoing_times = np.array(ongoing_times_tuple, dtype=np.float64)
+    ongoing_cpus = np.array(ongoing_cpus_tuple, dtype=np.int32)
+    ongoing_gpus = np.array(ongoing_gpus_tuple, dtype=np.int32)
+
+    # 调用原始 numba 函数
+    return _calculate_completion_time_with_state(
+        task_cpu, task_gpu, task_runtime,
+        current_time, avail_cpu, avail_gpu,
+        task_count, ongoing_times, ongoing_cpus, ongoing_gpus,
+        resources_cpu, resources_gpu
+    )
+
+@lru_cache(maxsize=512)
+def cached_calculate_task_resource_area(
+    task_runtime_tuple, task_cpu_tuple, task_gpu_tuple
+):
+    # 将 tuple 转为 numpy 数组
+    task_runtime = np.array(task_runtime_tuple, dtype=np.float64)
+    task_cpu = np.array(task_cpu_tuple, dtype=np.int32)
+    task_gpu = np.array(task_gpu_tuple, dtype=np.int32)
+
+    # 调用原始 numba 函数
+    return _calculate_task_resource_area(task_runtime, task_cpu, task_gpu)
+
+
 # multiprocessing, class should be pickleable
 class evosch2:
     """add all task in individual
@@ -880,6 +917,9 @@ class evosch2:
 
             best_task_idx = None
             best_diff = float('inf')
+            
+            # 获取节点资源，避免任务到无法运行的节点上
+            min_node_resources = self.node_resources[min_node]
 
             # 获取最大负载节点的任务
             max_node_mask = ind.task_array['node'] == max_node
@@ -887,6 +927,8 @@ class evosch2:
             
             # 遍历最大负载节点的每个任务
             for i, task in enumerate(max_node_tasks):
+                if task['cpu'] > min_node_resources['cpu'] or task['gpu'] > min_node_resources['gpu']:
+                    continue
                 # 计算移动任务后的资源使用情况
                 used_cpu_time_max = total_cpu_time[max_node] - task['cpu'] * task['total_runtime']
                 total_cpu_area_max = completion_time[max_node] * self.resources_evo[max_node]['cpu']
@@ -953,58 +995,70 @@ class evosch2:
         ind.init_node_array()
 
 
+# 修改 calculate_completion_time_record_with_running_task 使用缓存函数
     def calculate_completion_time_record_with_running_task(self, resources, task_array, ind):
         """计算完成时间并更新任务时间记录"""
         if len(task_array) == 0:
             return 0.0, 0, 0.0
+
         node = task_array[0]['node']
         if self.fixed_state[node] is None:
             raise ValueError("Fixed state not calculated")
-        
+
         # 提取简单数组
         task_cpu = np.array([task['cpu'] for task in task_array], dtype=np.int32)
         task_gpu = np.array([task['gpu'] for task in task_array], dtype=np.int32)
         task_runtime = np.array([task['total_runtime'] for task in task_array], dtype=np.float64)
-        
-        # 使用预计算状态计算完成时间
+
+        # 转换为 tuple 以支持缓存
+        task_cpu_tuple = tuple(task_cpu)
+        task_gpu_tuple = tuple(task_gpu)
+        task_runtime_tuple = tuple(task_runtime)
+        ongoing_times_tuple = tuple(self.fixed_state[node][4])
+        ongoing_cpus_tuple = tuple(self.fixed_state[node][5])
+        ongoing_gpus_tuple = tuple(self.fixed_state[node][6])
+
+        # 使用缓存的 _calculate_completion_time_with_state
         try:
-            completion_time, resources_released_weighted, starts, ends = _calculate_completion_time_with_state(
-                task_cpu,
-                task_gpu,
-                task_runtime,
+            completion_time, resources_released_weighted, starts, ends = cached_calculate_completion_time_with_state(
+                task_cpu_tuple,
+                task_gpu_tuple,
+                task_runtime_tuple,
                 self.fixed_state[node][0],  # current_time
                 self.fixed_state[node][1],  # avail_cpu
                 self.fixed_state[node][2],  # avail_gpu
                 self.fixed_state[node][3],  # task_count
-                self.fixed_state[node][4],  # ongoing_times
-                self.fixed_state[node][5],  # ongoing_cpus
-                self.fixed_state[node][6],  # ongoing_gpus
+                ongoing_times_tuple,
+                ongoing_cpus_tuple,
+                ongoing_gpus_tuple,
                 resources['cpu'],
                 resources['gpu']
             )
         except Exception as e:
             self.write_log("_calculate_completion_time_with_state error")
             self.write_log(f"Error occurred during resource allocation: {e}")
-            self.write_log(self.fixed_state[node], task_cpu,task_gpu,task_runtime)
+            self.write_log(self.fixed_state[node], task_cpu, task_gpu, task_runtime)
             raise e
-        
+
         if completion_time <= 0:
             self.write_log("_calculate_completion_time_with_state error")
             self.write_log(task_array)
             self.write_log(self.fixed_state)
             raise ValueError("Resource allocation failed")
-        
-        # 计算资源使用面积    
-        resource_area = _calculate_task_resource_area(task_runtime, task_cpu, task_gpu)
-            
-        # 更新individual中的任务时间
+
+        # 使用缓存的 _calculate_task_resource_area
+        resource_area = cached_calculate_task_resource_area(
+            task_runtime_tuple, task_cpu_tuple, task_gpu_tuple
+        )
+
+        # 更新 individual 中的任务时间
         for i, task in enumerate(task_array):
             idx = ind._task_id_index[task['task_id']]
             ind.task_array[idx]['start_time'] = starts[i]
             ind.task_array[idx]['finish_time'] = ends[i]
-            
+
         total_runtime = np.max(ends)
-            
+
         return completion_time, resource_area, total_runtime
 
     def calculate_total_time(self, ind: individual):
