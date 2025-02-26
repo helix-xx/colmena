@@ -7,6 +7,7 @@ from colmena.models import Result
 import logging  # 用于日志记录 `logger.warning`
 import uuid
 import numpy as np
+import time
 
 from .predictor import TaskTimePredictor 
 
@@ -182,19 +183,18 @@ class available_task(SingletonClass):
         """获取可以进行调度的任务
         
         Args:
-            current_time: 当前时间戳
-            scheduling_time: 调度算法需要的时间
-            timeout: 定时器设置的超时时间
+            time_split: float (为了保证调度器运行时有任务可以提交，将这个时间后的已调度任务重新放回可调度队列进行调度)
         
         Returns:
             tuple: (待调度的available任务dict, 需要重新调度的已调度任务array)
         """
+        current_time = time.time()
         with self.move_lock:
             
             # 从已调度任务中找出需要重新调度的任务
             if self.allocations.size > 0:
                 # 找出开始时间晚于调度完成时间的任务
-                mask = self.allocations['start_time'] > time_split
+                mask = self.allocations['start_time'] > current_time + time_split
                 tasks_to_reschedule = self.allocations[mask]
                 
                 if tasks_to_reschedule.size > 0:
