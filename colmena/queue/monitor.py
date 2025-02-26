@@ -177,6 +177,47 @@ class available_task(SingletonClass):
             return copy.deepcopy(self.task_ids)
         elif task_type == 'scheduled':
             return copy.deepcopy(self.scheduled_task)
+        
+    def get_schedulable_tasks(self, time_split: float) -> tuple[dict, np.ndarray]:
+        """获取可以进行调度的任务
+        
+        Args:
+            current_time: 当前时间戳
+            scheduling_time: 调度算法需要的时间
+            timeout: 定时器设置的超时时间
+        
+        Returns:
+            tuple: (待调度的available任务dict, 需要重新调度的已调度任务array)
+        """
+        with self.move_lock:
+            
+            # 从已调度任务中找出需要重新调度的任务
+            if self.allocations.size > 0:
+                # 找出开始时间晚于调度完成时间的任务
+                mask = self.allocations['start_time'] > time_split
+                tasks_to_reschedule = self.allocations[mask]
+                
+                if tasks_to_reschedule.size > 0:
+                    # 从已调度任务中移除这些任务
+                    self.allocations = self.allocations[~mask]
+                    
+                    # 将这些任务的ID从scheduled_task中移除并添加回task_ids
+                    for task in tasks_to_reschedule:
+                        task_name = task['name']
+                        task_id = task['task_id']
+                        
+                        if task_id in self.scheduled_task[task_name]:
+                            self.scheduled_task[task_name].remove(task_id)
+                            self.task_ids[task_name].append(task_id)
+                            
+                    logger.info(f"Moving {tasks_to_reschedule.size} tasks back to available queue for rescheduling")
+            else:
+                tasks_to_reschedule = np.zeros(0, dtype=self.dtype)
+
+            # 获取所有可用的任务
+            available_tasks = self.get_all(task_type='available')
+            
+            return available_tasks, tasks_to_reschedule
 
     def get_task_nums(self, all_tasks):
         result = {}

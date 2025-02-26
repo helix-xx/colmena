@@ -895,6 +895,107 @@ class evosch2:
 
         return total_cpu_time, total_gpu_time, completion_time, total_runtime
 
+
+    # def load_balance(self, ind: individual) -> None:
+    #     """平衡各节点的负载（改进版）"""
+    #     if not isinstance(ind, individual):
+    #         raise ValueError("load_balance input is not individual")
+        
+    #     # 初始化各节点资源使用状态
+    #     total_cpu_time, total_gpu_time, completion_time, end_time = self.calc_utilization(ind)
+    #     makespan = max(end_time.values())
+        
+    #     improved = True
+    #     while improved:
+    #         improved = False
+    #         current_makespan = max(end_time.values())
+            
+    #         # 按完成时间降序排列节点（最忙的节点优先处理）
+    #         sorted_nodes = sorted(end_time.items(), key=lambda x: -x[1])
+            
+    #         # 遍历所有高负载节点（允许扩展检查范围）
+    #         for max_node, _ in sorted_nodes:
+    #             # 如果当前节点已经不是最忙的则跳过
+    #             if end_time[max_node] < current_makespan:
+    #                 continue
+                
+    #             # 获取该节点所有任务（按执行时间降序排列）
+    #             node_mask = ind.task_array['node'] == max_node
+    #             tasks = ind.task_array[node_mask]
+    #             sorted_tasks = sorted(tasks, key=lambda x: -x['total_runtime'])
+                
+    #             # 遍历所有可能迁移的任务
+    #             for task in sorted_tasks:
+    #                 best_target = None
+    #                 best_reduction = 0
+    #                 original_time = end_time[max_node]
+                    
+    #                 # 尝试迁移到所有其他节点
+    #                 for target_node in end_time.keys():
+    #                     if target_node == max_node:
+    #                         continue
+                        
+    #                     # 检查目标节点资源是否满足
+    #                     target_res = self.node_resources[target_node]
+    #                     if (task['cpu'] > target_res['cpu'] or 
+    #                         task['gpu'] > target_res['gpu']):
+    #                         continue
+                        
+    #                     # 模拟迁移计算新时间
+    #                     new_max_time = original_time - task['total_runtime'] * (
+    #                         task['cpu'] / self.resources_evo[max_node]['cpu'] + 
+    #                         task['gpu'] / self.resources_evo[max_node]['gpu'])
+                        
+    #                     # 估算目标节点新时间（考虑资源争用）
+    #                     target_task_time = task['total_runtime'] * (
+    #                         task['cpu'] / self.resources_evo[target_node]['cpu'] + 
+    #                         task['gpu'] / self.resources_evo[target_node]['gpu'])
+    #                     new_target_time = end_time[target_node] + target_task_time
+                        
+    #                     # 计算新makespan
+    #                     potential_makespan = max(new_max_time, new_target_time)
+    #                     if potential_makespan < current_makespan:
+    #                         reduction = current_makespan - potential_makespan
+    #                         if reduction > best_reduction:
+    #                             best_reduction = reduction
+    #                             best_target = target_node
+                    
+    #                 # 执行最优迁移
+    #                 if best_target is not None:
+    #                     # 更新任务分配
+    #                     task_idx = ind.get_task_index(task['task_id'])
+    #                     ind.task_array[task_idx]['node'] = best_target
+                        
+    #                     # 更新资源统计
+    #                     task_cpu = task['cpu'] * task['total_runtime']
+    #                     task_gpu = task['gpu'] * task['total_runtime']
+    #                     total_cpu_time[max_node] -= task_cpu
+    #                     total_gpu_time[max_node] -= task_gpu
+    #                     total_cpu_time[best_target] += task_cpu
+    #                     total_gpu_time[best_target] += task_gpu
+                        
+    #                     # 重新计算完成时间
+    #                     for node in [max_node, best_target]:
+    #                         node_mask = ind.task_array['node'] == node
+    #                         completion_time[node], _, end_time[node] = (
+    #                             self.calculate_completion_time_record_with_running_task(
+    #                                 self.node_resources[node],
+    #                                 ind.task_array[node_mask],
+    #                                 ind
+    #                             )
+    #                         )
+                        
+    #                     improved = True
+    #                     break  # 每节点每次只迁移一个任务避免震荡
+                    
+    #                 if improved:
+    #                     break  # 如果已经改进，进入下一轮平衡
+    #             if improved:
+    #                 break  # 如果已经改进，进入下一轮平衡
+                        
+    #     ind.init_node_array()
+    
+    
     def load_balance(self, ind: individual) -> None:
         """平衡各节点的负载
         

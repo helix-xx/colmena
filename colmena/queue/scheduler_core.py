@@ -6,6 +6,7 @@ import multiprocessing  # 用于多进程池
 import logging  # 用于日志记录
 import uuid  # 用于生成唯一任务ID
 import numpy as np  # 用于数值计算
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -15,14 +16,114 @@ from .fcfs_sch import FCFSScheduler
 from .monitor import available_task, HistoricalData, Sch_data
 
 
+class SchedulerTimer:
+    """Manages scheduling triggers with intelligent timing based on task execution windows"""
     
-    
+    def __init__(self, trigger_callback: Callable, scheduling_time: int = 120):
+        """
+        Args:
+            trigger_callback: Callback function to execute when timer triggers
+            scheduling_time: Time needed for one scheduling cycle in seconds
+        """
+        self.trigger_callback = trigger_callback
+        self.scheduling_time = scheduling_time
+        self.min_trigger_time = 10
+        self.timer: Optional[threading.Timer] = None
+        self.timer_lock = threading.Lock()
+        self._timeout = 0
+        
+    def _execute_callback(self):
+        """Wrapper to execute the callback and clear timer reference"""
+        try:
+            self.trigger_callback()
+        finally:
+            with self.timer_lock:
+                self.timer = None
+
+    def reset(self, task_lists: np.ndarray = None):
+        """Reset the scheduling timer based on running tasks and scheduling window
+        
+        Args:
+            task_lists: Numpy structured array of tasks with start_time and finish_time fields
+        """
+        with self.timer_lock:
+            if self.timer:
+                self.timer.cancel()
+                self.timer = None
+
+            # Default timeout is scheduling_time
+            timeout = self.min_trigger_time
+            
+            if task_lists is not None and len(task_lists) > 0:
+                current_time = time.time()
+                
+                # Get unique nodes
+                unique_nodes = np.unique(task_lists['node'])
+                
+                # Find last task for each node
+                node_last_tasks = {}
+                for node in unique_nodes:
+                    # Get tasks for this node
+                    node_tasks = task_lists[task_lists['node'] == node]
+                    if len(node_tasks) > 0:
+                        # Sort by start_time and get the last one
+                        sorted_indices = np.argsort(node_tasks['start_time'])
+                        last_task = node_tasks[sorted_indices[-1]]
+                        node_last_tasks[node] = last_task
+                        logger.debug(f"Node {node} last task {last_task['task_id']} "
+                                f"starts at {last_task['start_time']}")
+
+                if node_last_tasks:
+                    # Find the earliest start time among last tasks
+                    earliest_start = float('inf')
+                    earliest_node = None
+                    earliest_task = None
+                    
+                    for node, task in node_last_tasks.items():
+                        if task['start_time'] < earliest_start:
+                            earliest_start = task['start_time']
+                            earliest_node = node
+                            earliest_task = task
+
+                    # Calculate timeout based on earliest start time
+                    time_until_start = earliest_start - current_time
+                    
+                    if time_until_start > self.scheduling_time:
+                        # Set timer to trigger before the earliest last task starts
+                        # timeout = time_until_start - self.scheduling_time
+                        timeout = self.scheduling_time
+                        logger.info(f"Setting timer for {timeout}s before last task "
+                                f"{earliest_task['task_id']} on node {earliest_node} "
+                                f"(starts at {earliest_start})")
+                    else:
+                        # If the earliest start time is too close or in the past,
+                        # use default scheduling time
+                        timeout = time_until_start
+                        logger.info(f"Earliest last task starts too soon, "
+                                f"using default timeout of {timeout}s")
+
+            # Create and start new timer
+            self._time_out = timeout
+            self.timer = threading.Timer(timeout, self._execute_callback)
+            self.timer.start()
+            logger.info(f"Reset scheduling timer for {timeout} seconds")
+
+    def cancel(self):
+        """Cancel current timer if exists"""
+        with self.timer_lock:
+            if self.timer:
+                self.timer.cancel()
+                self.timer = None
+                
+                
+## resources checking and events handling
+                
 class SmartScheduler:
     # support different scheduling policy here
     
     ## init all sch model here
     # sch_data can be menber of all member model
-    def __init__(self, methods, available_task_capacity, available_resources, sch_config= None):
+    def __init__(self, methods, available_task_capacity, available_resources, sch_config= None, scheduling_time:int=120):
         self.sch_data: Sch_data = Sch_data(methods, available_resources)
         # self.agent_pilot = agent_pilot(sch_data=self.sch_data, resources_rate=2, available_resources=available_resources, util_level=0.8)
         self.sch_data.init_task_queue(available_task(methods), available_task_capacity)
@@ -39,7 +140,10 @@ class SmartScheduler:
         self.exceed_area_limit = 1.1
         self.exceed_completion_time_limit = 1
         
-        
+        # scheduler timer
+        self.scheduler_timer:SchedulerTimer = None
+        self._scheduling_time = scheduling_time
+        # scheduler result_ind, allocation in available task class
         self.best_result = None
         
         # lock
@@ -89,40 +193,50 @@ class SmartScheduler:
         logger.info('init smart scheduler')
         
         # warmup numba functions
-        self._warmup_numba_functions()
+        # self._warmup_numba_functions()
         
     def __del__(self):
         self.pool.close()
         self.pool.join()
         
-    def _warmup_numba_functions(self):
-        """预热所有numba函数"""
-        print("Warming up numba functions...")
-        start = time.time()
+    # def _warmup_numba_functions(self):
+    #     """预热所有numba函数"""
+    #     print("Warming up numba functions...")
+    #     start = time.time()
         
-        # 准备最小规模的测试数据
-        small_task_cpu = np.array([1], dtype=np.int32)
-        small_task_gpu = np.array([0], dtype=np.int32)
-        small_task_runtime = np.array([1.0], dtype=np.float64)
-        empty_running = np.array([], dtype=np.float64)
-        empty_cpus = np.array([], dtype=np.int32)
-        empty_gpus = np.array([], dtype=np.int32)
+    #     # 准备最小规模的测试数据
+    #     small_task_cpu = np.array([1], dtype=np.int32)
+    #     small_task_gpu = np.array([0], dtype=np.int32)
+    #     small_task_runtime = np.array([1.0], dtype=np.float64)
+    #     empty_running = np.array([], dtype=np.float64)
+    #     empty_cpus = np.array([], dtype=np.int32)
+    #     empty_gpus = np.array([], dtype=np.int32)
         
-        # 预热计算完成时间函数
-        # _calculate_completion_time(
-        #     small_task_cpu,
-        #     small_task_gpu,
-        #     small_task_runtime,
-        #     empty_running,
-        #     empty_cpus,
-        #     empty_gpus,
-        #     4,
-        #     2,
-        #     0.0
-        # )
-        # print(f"Warmed up in {time.time() - start:.2f} seconds")
+    #     # 预热计算完成时间函数
+    #     # _calculate_completion_time(
+    #     #     small_task_cpu,
+    #     #     small_task_gpu,
+    #     #     small_task_runtime,
+    #     #     empty_running,
+    #     #     empty_cpus,
+    #     #     empty_gpus,
+    #     #     4,
+    #     #     2,
+    #     #     0.0
+    #     # )
+    #     # print(f"Warmed up in {time.time() - start:.2f} seconds")
         
-    
+    def set_scheduler_timer(self, trigger_callback: Callable):
+        """设置调度定时器的回调函数
+        
+        Args:
+            trigger_callback: 触发调度的回调函数
+        """
+        self.scheduler_timer = SchedulerTimer(
+            trigger_callback=trigger_callback,
+            scheduling_time=self._scheduling_time
+        )
+        
     def acquire_resources(self, key):
         # topic与method不一样，暂时添加一个映射
         topic_method_mapping = {
@@ -251,8 +365,10 @@ class SmartScheduler:
         if method == "ga":
         # run evo sch
             # with self.sch_lock: # 异步进行不需要加锁，每个调度算法都有自己的可调度任务
-            all_tasks = self.sch_data.avail_task.get_all()
-            self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全
+            # all_tasks = self.sch_data.avail_task.get_all()
+            # self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全 每次调度时只考虑未被调度的任务
+            all_tasks, scheduled_array = self.sch_data.avail_task.get_schedulable_tasks(self.scheduler_timer.scheduling_time)
+            self.sch_data.avail_task.move_available_to_scheduled(all_tasks)
             best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
             self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
             self.best_result = self.evo_sch.best_ind

@@ -19,7 +19,7 @@ import numpy as np
 import proxystore.store
 
 from colmena.models import Result, SerializationMethod, ResourceRequirements
-from .scheduler_core import SmartScheduler
+from .scheduler_core import SmartScheduler, SchedulerTimer
 from .monitor import available_task
 
 logger = logging.getLogger(__name__)
@@ -125,24 +125,13 @@ class ColmenaQueues:
         # self.schedule_callback_lock = threading.Lock() # resources lock protect by queue_sch_lock
         self.is_scheduling = threading.Event()
 
-        # timer for trigger evo_sch
-        timer = None
-        def reset_timer():
-            nonlocal timer
-            # 重置计时器，取消之前的计时器并启动新的计时器
-            if timer:
-                timer.cancel()
-            timeout = 3
-            timer = threading.Timer(timeout, self.trigger_sch)
-            timer.start()
-
-        self.timer_trigger = reset_timer
-
         # tmp test
         if self.enable_smart_sch or self.enable_fcfs:
             self.smart_sch: SmartScheduler = SmartScheduler(
                 methods, available_task_capacity, available_resources, sch_config=None
             )
+            # timer for trigger evo_sch
+            self.smart_sch.set_scheduler_timer(self.trigger_sch)
 
         # Create {topic: proxystore_name} mapping
         self.proxystore_name = {t: None for t in self.topics}
@@ -292,7 +281,7 @@ class ColmenaQueues:
             else:
                 self._add_task_flag.set()
                 if self.smart_sch.sch_data.avail_task.get_total_nums() > 0:
-                    self.timer_trigger()
+                    self.smart_sch.scheduler_timer.reset(self.smart_sch.sch_data.avail_task.allocations)
                         
         if self.enable_fcfs:
             with self.queue_sch_lock:
@@ -400,7 +389,7 @@ class ColmenaQueues:
                 # if self._available_tasks.get_total_nums() >= self._available_task_capacity:
                 #     logger.info(f'Client reach the capacity.')
                 #     self._add_task_flag.clear() # TODO for now we disable it to run the test
-            self.timer_trigger()
+            self.smart_sch.scheduler_timer.reset(self.smart_sch.sch_data.avail_task.allocations)
         elif self.enable_fcfs:
             with self.queue_sch_lock:
                 # 每一次触发任务提交时，将任务添加到任务队列中，并尝试通过FCFS提交任务
@@ -572,7 +561,7 @@ class ColmenaQueues:
 
             # remain task are waiting for resources, every n seconds trigger submit
             # if self.smart_sch.evo_sch.at.get_total_nums() > 0:
-            #     self.timer_trigger()
+            #     self.smart_sch.scheduler_timer.reset(self.smart_sch.sch_data.avail_task.allocations)
 
     def trigger_sch(self):
         """Conditions that trigger scheduling and submission of tasks
