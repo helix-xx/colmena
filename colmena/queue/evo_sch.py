@@ -854,8 +854,8 @@ class evosch2:
         
         return ind
 
-    def calc_time(self, tasks: np.ndarray) -> tuple[float, float]:
-        """计算任务的CPU和GPU总时间
+    def calc_used_area(self, tasks: np.ndarray) -> tuple[float, float]:
+        """计算任务的CPU和GPU使用的面积(使用时间*使用数量)
         
         Args:
             tasks: 任务数组
@@ -868,7 +868,7 @@ class evosch2:
         return total_cpu_time, total_gpu_time
 
     def calc_utilization(self, ind: individual) -> tuple[dict, dict, dict]:
-        """计算各节点的资源利用情况
+        """计算各节点的资源利用情况, total_area指任务使用资源的总面积, released_area指到最后任务执行完开始释放资源时占用的总面积(包括中间的idle部分)
         
         Args:
             ind: individual对象
@@ -876,24 +876,25 @@ class evosch2:
         Returns:
             tuple: (CPU时间字典, GPU时间字典, 完成时间字典)
         """
-        total_cpu_time = defaultdict(float)
-        total_gpu_time = defaultdict(float)
+        total_cpu_area = defaultdict(float)
+        total_gpu_area = defaultdict(float)
         completion_time = defaultdict(float)
         total_runtime = defaultdict(float)
+        released_weighted = defaultdict(float)
         
         for node in self.node_resources.keys():
             node_mask = ind.task_array['node'] == node
             node_tasks = ind.task_array[node_mask]
             
-            total_cpu_time[node], total_gpu_time[node] = self.calc_time(node_tasks)
+            total_cpu_area[node], total_gpu_area[node] = self.calc_used_area(node_tasks)
             
-            completion_time[node], _, total_runtime[node] = self.calculate_completion_time_record_with_running_task(
+            completion_time[node], released_weighted[node], total_runtime[node] = self.calculate_completion_time_record_with_running_task(
                 self.node_resources[node],
                 node_tasks,
                 ind
             )
 
-        return total_cpu_time, total_gpu_time, completion_time, total_runtime
+        return total_cpu_area, total_gpu_area, completion_time, total_runtime
 
 
     # def load_balance(self, ind: individual) -> None:
@@ -1627,8 +1628,6 @@ class evosch2:
         print(f"After cleaning memory usage: {memory_usage:.2f} MB")
 
     def run_ga_for_node(self, node, population, num_runs_in_node, num_generations_node):
-        self.write_log(f"\nNode {node} GA start")
-        self.write_log(f"Initial allocation: {population[0].task_array}")
 
         # 检查边界条件
         task_nums = len(population[0].task_array)
@@ -1813,6 +1812,8 @@ class evosch2:
                 
                 # 串行处理每个节点
                 for node, population in self.population_node.items():
+                    self.write_log(f"\nNode {node} GA start")
+                    self.write_log(f"Initial allocation: {population[0].task_array}")
                     results = self.run_ga_for_node(
                         node, 
                         population, 
@@ -1824,7 +1825,7 @@ class evosch2:
                     self.update_node_tasks(a_ind, best_ind, node)
                     self.write_log(f"Node {node} final allocation: {best_ind.task_array}")
                 
-                # # 并行处理每个节点
+                # 并行处理每个节点
                 # results = pool.starmap(
                 #     self.run_ga_for_node,
                 #     [
@@ -1832,8 +1833,9 @@ class evosch2:
                 #         for node, population in self.population_node.items()
                 #     ],
                 # )
-                # for node, task_allocation in results:
-                #     self.write_log(f"Node {node} final allocation: {task_allocation}")
+                # for node, best_ind in results:
+                #     self.write_log(f"Node {node} final allocation: {best_ind.task_array}")
+                #     self.update_node_tasks(a_ind, best_ind, node)
 
                 # all node ind operation end
         # global ind operation here
@@ -1854,4 +1856,7 @@ class evosch2:
 
         logger.info("GA running time: %s seconds" % (time.time() - start_time))
         # self.at.move_allocation_to_scheduled(all_tasks, best_allocation) # should consider lock
+        
+        ## necessary clean
+        # self.fixed_state = {}
         return best_allocation

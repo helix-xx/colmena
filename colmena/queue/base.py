@@ -128,7 +128,7 @@ class ColmenaQueues:
         # tmp test
         if self.enable_smart_sch or self.enable_fcfs:
             self.smart_sch: SmartScheduler = SmartScheduler(
-                methods, available_task_capacity, available_resources, sch_config=None
+                methods, available_task_capacity, available_resources, sch_config=None, scheduler_type=self.scheduler_type
             )
             # timer for trigger evo_sch
             self.smart_sch.set_scheduler_timer(self.trigger_sch)
@@ -649,6 +649,37 @@ class ColmenaQueues:
                     logger.warning("Scheduler returned no allocation")
         finally:
             self.is_scheduling.clear()
+            
+    def get_resource_event(self, topic):
+        """
+        获取指定任务类型的资源反馈事件
+        
+        Args:
+            topic: 任务主题 (如 'simulate', 'train' 等)
+        
+        Returns:
+            tuple: (event, info) 事件对象和详细信息
+        """
+        if hasattr(self, 'smart_sch') and self.smart_sch:
+            # 映射topic到method
+            topic_method_mapping = {
+                'simulate': 'run_calculator',
+                'sample': 'run_sampling',
+                'train': 'train',
+                'infer': 'evaluate'
+            }
+            method = topic_method_mapping.get(topic, None)
+            
+            if method is None:
+                return None, {'reason': 'Unknown topic'}
+            
+            # 检查是否有资源反馈事件
+            if hasattr(self.smart_sch, 'resource_feedback_events') and method in self.smart_sch.resource_feedback_events:
+                event = self.smart_sch.resource_feedback_events[method]
+                info = self.smart_sch.resource_feedback_info.get(method, {})
+                return event, info
+        
+        return None, {'reason': 'Resource events not available'}
             
     def shutdown_thread_pool(self):
         """关闭线程池"""

@@ -7,6 +7,7 @@ import logging  # 用于日志记录
 import uuid  # 用于生成唯一任务ID
 import numpy as np  # 用于数值计算
 from typing import Callable, Optional
+import concurrent.futures
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,21 @@ class SchedulerTimer:
                 self.timer.cancel()
                 self.timer = None
                 
+class FeedbackEvent():
+    def __init__(self, methods):
+        self.methods = methods
+        self.feedback_events = {}
+        self.feedback_info = {}
+        for method in methods:
+            self.feedback_events[method] = threading.Event()
+            
+    def set_event():
+        pass
+    
+    def get_event():
+        pass
+
+    
                 
 ## resources checking and events handling
                 
@@ -123,14 +139,16 @@ class SmartScheduler:
     
     ## init all sch model here
     # sch_data can be menber of all member model
-    def __init__(self, methods, available_task_capacity, available_resources, sch_config= None, scheduling_time:int=120):
-        self.sch_data: Sch_data = Sch_data(methods, available_resources)
+    def __init__(self, methods, available_task_capacity, available_resources, sch_config= None, scheduling_time:int=120, scheduler_type="ga"):
+        self.sch_data: Sch_data = Sch_data(methods, available_resources, scheduler_type)
         # self.agent_pilot = agent_pilot(sch_data=self.sch_data, resources_rate=2, available_resources=available_resources, util_level=0.8)
         self.sch_data.init_task_queue(available_task(methods), available_task_capacity)
         self.sch_data.init_hist_task(HistoricalData(methods))
         self.sch_data.init_task_time_predictor(methods, self.sch_data.historical_task_data.features)
         self.evo_sch: evosch2 = evosch2(resources=available_resources, at=self.sch_data.avail_task, hist_data=self.sch_data.historical_task_data, sch_data=self.sch_data)
         self.fcfs_sch: FCFSScheduler = FCFSScheduler(resources=available_resources, at=self.sch_data.avail_task, hist_data=self.sch_data.historical_task_data, sch_data=self.sch_data)
+        self.feedback_event: FeedbackEvent = FeedbackEvent(methods)
+        
         
         #agent_pilot
         self.resources_rate = 2
@@ -151,12 +169,12 @@ class SmartScheduler:
         self.available_task_lock = threading.Lock() # lock for available task to move task between available and scheduled
         
         # processes = len(self.node_resources)
-        processes = 4
+        processes = 16
         self.pool = multiprocessing.Pool(processes=processes)
         
-        self.sch_data.usr_path = os.path.expanduser('~')
+         
         
-
+        self.sch_data.usr_path = os.path.expanduser('~')
         # init historical data and task time predictor
         hist_path = []
         # hist_path on Research and teaching cluster
@@ -199,33 +217,6 @@ class SmartScheduler:
         self.pool.close()
         self.pool.join()
         
-    # def _warmup_numba_functions(self):
-    #     """预热所有numba函数"""
-    #     print("Warming up numba functions...")
-    #     start = time.time()
-        
-    #     # 准备最小规模的测试数据
-    #     small_task_cpu = np.array([1], dtype=np.int32)
-    #     small_task_gpu = np.array([0], dtype=np.int32)
-    #     small_task_runtime = np.array([1.0], dtype=np.float64)
-    #     empty_running = np.array([], dtype=np.float64)
-    #     empty_cpus = np.array([], dtype=np.int32)
-    #     empty_gpus = np.array([], dtype=np.int32)
-        
-    #     # 预热计算完成时间函数
-    #     # _calculate_completion_time(
-    #     #     small_task_cpu,
-    #     #     small_task_gpu,
-    #     #     small_task_runtime,
-    #     #     empty_running,
-    #     #     empty_cpus,
-    #     #     empty_gpus,
-    #     #     4,
-    #     #     2,
-    #     #     0.0
-    #     # )
-    #     # print(f"Warmed up in {time.time() - start:.2f} seconds")
-        
     def set_scheduler_timer(self, trigger_callback: Callable):
         """设置调度定时器的回调函数
         
@@ -237,7 +228,122 @@ class SmartScheduler:
             scheduling_time=self._scheduling_time
         )
         
-    def acquire_resources(self, key):
+    # def acquire_resources(self, key):
+    #     # topic与method不一样，暂时添加一个映射
+    #     topic_method_mapping = {
+    #         'simulate': 'run_calculator',
+    #         'sample': 'run_sampling',
+    #         'train': 'train',
+    #         'infer': 'evaluate'
+    #     }
+        
+    #     method = topic_method_mapping.get(key, None)  # 根据给定的 key 获取对应的方法
+        
+    #     pilot_task = self.sch_data.pilot_task.get(method, None)
+    #     info = {}
+    #     if not pilot_task:
+    #         info['reason'] = "no pilot task"
+    #         return 0, info
+    #     else:
+    #         # 获取前后分配的情况，并通过预测器的时间计算资源利用率
+    #         ind = self.best_result
+    #         if not ind:
+    #             info['reason'] = 'no previous info'
+    #             return 0, info
+    #         total_cpu_time_per_node, total_gpu_time_per_node, completion_time = self.evo_sch.calc_utilization(ind)
+            
+    #         all_tasks = self.sch_data.avail_task.get_all()
+    #         all_tasks = copy.deepcopy(all_tasks)
+    #         pilot_task = copy.deepcopy(pilot_task)
+    #         self.sch_data.renew_task_uuid(pilot_task)
+            
+    #         all_tasks = self.sch_data.avail_task.dummy_add_task_id(method, pilot_task['task_id'], all_tasks=all_tasks)
+    #         self.sch_data.add_sch_task(pilot_task)
+    #         _ = self.run_sch()
+    #         new_ind = self.evo_sch.best_ind
+    #         new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time = self.evo_sch.calc_utilization(new_ind)
+    #         self.sch_data.pop_sch_task(pilot_task)
+            
+    #         # evaluate resources
+    #         node_cpu_count = {node: self.available_resources[node]['cpu'] for node in self.available_resources.keys()}
+    #         node_gpu_count = {node: self.available_resources[node]['gpu'] for node in self.available_resources.keys()}
+
+    #         current_cpu_utilization = {node: (total_cpu_time_per_node[node] / (completion_time[node] * node_cpu_count[node]) if completion_time[node] > 0 else 0) for node in total_cpu_time_per_node}
+    #         new_cpu_utilization = {node: (new_total_cpu_time_per_node[node] / (new_completion_time[node] * node_cpu_count[node]) if new_completion_time[node] > 0 else 0) for node in new_total_cpu_time_per_node}
+            
+    #         current_gpu_utilization = {node: (total_gpu_time_per_node[node] / (completion_time[node] * node_gpu_count[node]) if completion_time[node] > 0 else 0) for node in total_gpu_time_per_node}
+    #         new_gpu_utilization = {node: (new_total_gpu_time_per_node[node] / (new_completion_time[node] * node_gpu_count[node]) if new_completion_time[node] > 0 else 0) for node in new_total_gpu_time_per_node}
+            
+    #         # 计算利用率提升比例
+    #         utilization_improvement = {}
+    #         for node in current_cpu_utilization:
+    #             cpu_improvement_ratio = (
+    #                 (new_cpu_utilization[node] - current_cpu_utilization[node]) / current_cpu_utilization[node]
+    #                 if current_cpu_utilization[node] > 0 else float('inf')
+    #             )
+    #             gpu_improvement_ratio = (
+    #                 (new_gpu_utilization[node] - current_gpu_utilization[node]) / current_gpu_utilization[node]
+    #                 if current_gpu_utilization[node] > 0 else float('inf')
+    #             )
+                
+    #             utilization_improvement[node] = {
+    #                 'cpu': cpu_improvement_ratio,
+    #                 'gpu': gpu_improvement_ratio
+    #             }
+                
+    #         # 计算计算时间的延长
+    #         completion_time_improvement = {node: (new_completion_time[node] - completion_time[node]) / completion_time[node]  if completion_time[node] > 0 else 0 for node in completion_time}
+            
+    #         used_cpu_area = sum(total_cpu_time_per_node.values())
+    #         new_used_cpu_area = sum(new_total_cpu_time_per_node.values())
+    #         used_gpu_area = sum(total_gpu_time_per_node.values())
+    #         new_used_gpu_area = sum(new_total_gpu_time_per_node.values())
+            
+    #         cpu_area_per_node = {}
+    #         new_cpu_area_per_node = {}
+    #         gpu_area_per_node = {}
+    #         new_gpu_area_per_node = {}
+
+    #         # completion time with cpu and gpu weight
+    #         for node in completion_time:
+    #             cpu_nums = self.available_resources[node]['cpu']
+    #             cpu_area_per_node[node] = completion_time[node] * cpu_nums
+    #             new_cpu_area_per_node[node] = new_completion_time[node] * cpu_nums
+    #             gpu_nums = self.available_resources[node]['gpu']
+    #             gpu_area_per_node[node] = completion_time[node] * gpu_nums
+    #             new_gpu_area_per_node[node] = new_completion_time[node] * gpu_nums
+            
+    #         total_cpu_area = sum(cpu_area_per_node.values())
+    #         new_total_cpu_area = sum(new_cpu_area_per_node.values())
+    #         total_gpu_area = sum(gpu_area_per_node.values())
+    #         new_total_gpu_area = sum(new_gpu_area_per_node.values())
+            
+    #         # total util improvement
+    #         # TODO area 可能不变，用标准任务 / area获得潜在效率提升
+    #         # 检查占用总area是否超出：
+    #         if new_total_cpu_area > self.exceed_area_limit * total_cpu_area or new_total_gpu_area > self.exceed_area_limit * total_gpu_area:
+    #             info['reason'] = "exceed area limit"
+    #             return 0, info
+    #         # 检查最大 completion time是否超出
+    #         if max(new_completion_time.values()) > self.exceed_completion_time_limit * max(completion_time.values()):
+    #             info['reason'] = "exceed completion time limit"
+    #             return 0, info
+            
+    #         # 检查是否有提升达到设定的 util_level
+    #         # 设置的提升阈值（例如10%）
+    #         info = utilization_improvement
+    #         for node, improvement in utilization_improvement.items():
+    #             if improvement['cpu'] >= self.util_level or improvement['gpu'] >= self.util_level:
+    #                 info['reason'] = "utilize improvement;"
+    #                 return 1, info
+            
+    #         # info['reason'] = "no utilize improvement"
+    #         # logger.info('acquire resources info {}'.format(info))
+    #         # return 0, info
+    #         info['reason'] = "no limit exceed"
+    #         return 1, info
+        
+    def acquire_resources(smart_scheduler, key):
         # topic与method不一样，暂时添加一个映射
         topic_method_mapping = {
             'simulate': 'run_calculator',
@@ -248,110 +354,148 @@ class SmartScheduler:
         
         method = topic_method_mapping.get(key, None)  # 根据给定的 key 获取对应的方法
         
-        pilot_task = self.sch_data.pilot_task.get(method, None)
+        pilot_task = smart_scheduler.sch_data.pilot_task.get(method, None)
         info = {}
         if not pilot_task:
             info['reason'] = "no pilot task"
             return 0, info
         else:
             # 获取前后分配的情况，并通过预测器的时间计算资源利用率
-            ind = self.best_result
+            ind = smart_scheduler.best_result
             if not ind:
                 info['reason'] = 'no previous info'
                 return 0, info
-            total_cpu_time_per_node, total_gpu_time_per_node, completion_time = self.evo_sch.calc_utilization(ind)
+            total_cpu_time_per_node, total_gpu_time_per_node, completion_time, total_runtime = smart_scheduler.evo_sch.calc_utilization(ind)
             
-            all_tasks = self.sch_data.avail_task.get_all()
-            all_tasks = copy.deepcopy(all_tasks)
+            # run_sch again
+            # all_tasks = self.sch_data.avail_task.get_all()
+            # all_tasks = copy.deepcopy(all_tasks)
+            # pilot_task = copy.deepcopy(pilot_task)
+            # self.sch_data.renew_task_uuid(pilot_task)
+            
+            # all_tasks = self.sch_data.avail_task.dummy_add_task_id(method, pilot_task['task_id'], all_tasks=all_tasks)
+            # self.sch_data.add_sch_task(pilot_task)
+            # _ = self.run_sch()
+            # new_ind = self.evo_sch.best_ind
+            # new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time = self.evo_sch.calc_utilization(new_ind)
+            # self.sch_data.pop_sch_task(pilot_task)
+            
+            # direct get data
             pilot_task = copy.deepcopy(pilot_task)
-            self.sch_data.renew_task_uuid(pilot_task)
+            smart_scheduler.sch_data.renew_task_uuid(pilot_task)
+            new_ind = individual(tasks_nums=ind.tasks_nums+1, total_resources=ind.total_resources)
+            new_ind.task_array[:-1] = ind.task_array
             
-            all_tasks = self.sch_data.avail_task.dummy_add_task_id(method, pilot_task['task_id'], all_tasks=all_tasks)
-            self.sch_data.add_sch_task(pilot_task)
-            _ = self.run_sch()
-            new_ind = self.evo_sch.best_ind
-            new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time = self.evo_sch.calc_utilization(new_ind)
-            self.sch_data.pop_sch_task(pilot_task)
+            cpu = pilot_task['resources.cpu']
+            gpu = pilot_task['resources.gpu']
+            msg_size = pilot_task['message_sizes.inputs']
+            method = pilot_task['method']
+            task_id = pilot_task['task_id']
             
-            # evaluate resources
-            node_cpu_count = {node: self.available_resources[node]['cpu'] for node in self.available_resources.keys()}
-            node_gpu_count = {node: self.available_resources[node]['gpu'] for node in self.available_resources.keys()}
-
-            current_cpu_utilization = {node: (total_cpu_time_per_node[node] / (completion_time[node] * node_cpu_count[node]) if completion_time[node] > 0 else 0) for node in total_cpu_time_per_node}
-            new_cpu_utilization = {node: (new_total_cpu_time_per_node[node] / (new_completion_time[node] * node_cpu_count[node]) if new_completion_time[node] > 0 else 0) for node in new_total_cpu_time_per_node}
-            
-            current_gpu_utilization = {node: (total_gpu_time_per_node[node] / (completion_time[node] * node_gpu_count[node]) if completion_time[node] > 0 else 0) for node in total_gpu_time_per_node}
-            new_gpu_utilization = {node: (new_total_gpu_time_per_node[node] / (new_completion_time[node] * node_gpu_count[node]) if new_completion_time[node] > 0 else 0) for node in new_total_gpu_time_per_node}
-            
-            # 计算利用率提升比例
-            utilization_improvement = {}
-            for node in current_cpu_utilization:
-                cpu_improvement_ratio = (
-                    (new_cpu_utilization[node] - current_cpu_utilization[node]) / current_cpu_utilization[node]
-                    if current_cpu_utilization[node] > 0 else float('inf')
-                )
-                gpu_improvement_ratio = (
-                    (new_gpu_utilization[node] - current_gpu_utilization[node]) / current_gpu_utilization[node]
-                    if current_gpu_utilization[node] > 0 else float('inf')
-                )
-                
-                utilization_improvement[node] = {
-                    'cpu': cpu_improvement_ratio,
-                    'gpu': gpu_improvement_ratio
-                }
-                
-            # 计算计算时间的延长
-            completion_time_improvement = {node: (new_completion_time[node] - completion_time[node]) / completion_time[node]  if completion_time[node] > 0 else 0 for node in completion_time}
-            
-            used_cpu_area = sum(total_cpu_time_per_node.values())
-            new_used_cpu_area = sum(new_total_cpu_time_per_node.values())
-            used_gpu_area = sum(total_gpu_time_per_node.values())
-            new_used_gpu_area = sum(new_total_gpu_time_per_node.values())
-            
-            cpu_area_per_node = {}
-            new_cpu_area_per_node = {}
-            gpu_area_per_node = {}
-            new_gpu_area_per_node = {}
-
-            # completion time with cpu and gpu weight
-            for node in completion_time:
-                cpu_nums = self.available_resources[node]['cpu']
-                cpu_area_per_node[node] = completion_time[node] * cpu_nums
-                new_cpu_area_per_node[node] = new_completion_time[node] * cpu_nums
-                gpu_nums = self.available_resources[node]['gpu']
-                gpu_area_per_node[node] = completion_time[node] * gpu_nums
-                new_gpu_area_per_node[node] = new_completion_time[node] * gpu_nums
-            
-            total_cpu_area = sum(cpu_area_per_node.values())
-            new_total_cpu_area = sum(new_cpu_area_per_node.values())
-            total_gpu_area = sum(gpu_area_per_node.values())
-            new_total_gpu_area = sum(new_gpu_area_per_node.values())
-            
-            # total util improvement
-            # TODO area 可能不变，用标准任务 / area获得潜在效率提升
-            # 检查占用总area是否超出：
-            if new_total_cpu_area > self.exceed_area_limit * total_cpu_area or new_total_gpu_area > self.exceed_area_limit * total_gpu_area:
-                info['reason'] = "exceed area limit"
-                return 0, info
-            # 检查最大 completion time是否超出
-            if max(new_completion_time.values()) > self.exceed_completion_time_limit * max(completion_time.values()):
-                info['reason'] = "exceed completion time limit"
-                return 0, info
-            
-            # 检查是否有提升达到设定的 util_level
-            # 设置的提升阈值（例如10%）
-            info = utilization_improvement
-            for node, improvement in utilization_improvement.items():
-                if improvement['cpu'] >= self.util_level or improvement['gpu'] >= self.util_level:
-                    info['reason'] = "utilize improvement;"
-                    return 1, info
-            
-            # info['reason'] = "no utilize improvement"
-            # logger.info('acquire resources info {}'.format(info))
-            # return 0, info
-            info['reason'] = "no limit exceed"
-            return 1, info
+            new_ind.task_array[-1] = (
+                method,
+                task_id,
+                cpu,
+                gpu,
+                "node",
+                0,
+                0,
+                0,
+            )
         
+            for node, resources in ind.total_resources.items():
+                if resources['cpu'] >= cpu and resources['gpu'] >= gpu:
+                    new_ind.task_array[-1]['node'] = node
+                    # TODO how to choose best resources
+                    # new_ind.task_array[-1]['cpu'] = resources['cpu']
+                    # new_ind.task_array[-1]['gpu'] = resources['gpu']
+                    new_ind.task_array[-1]['total_runtime'] = smart_scheduler.sch_data.Task_time_predictor.get_runtime(cpu, gpu, msg_size, method)
+                    new_ind.update_task_id_index()
+                new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time, new_total_runtime = smart_scheduler.evo_sch.calc_utilization(new_ind)
+            #     print(
+            #         f"Node: {node}, "
+            #         f"New CPU Time: {new_total_cpu_time_per_node[node]}, "
+            #         f"Total CPU Time: {total_cpu_time_per_node[node]}"
+            #     )
+            #     print(
+            #         f"Node: {node}, "
+            #         f"New GPU Time: {new_total_gpu_time_per_node[node]}, "
+            #         f"Total GPU Time: {total_gpu_time_per_node[node]}"
+            #     )
+            #     print(
+            #         f"Node: {node}, "
+            #         f"New Completion Time: {new_completion_time[node]}, "
+            #         f"Completion Time: {completion_time[node]}"
+            #     )
+            #     print(
+            #         f"Node: {node}, "
+            #         f"New Runtime: {new_total_runtime[node]}, "
+            #         f"Total Runtime: {total_runtime[node]}"
+            #     )
+            # print(new_ind.task_array)
+                if new_completion_time[node] <= completion_time[node]:
+                    return 1, info
+
+            
+            return 0, info
+        
+    def check_runtime_resources(self):
+        # 在进行完调度后计算资源失配情况
+        
+        # 获取调度的最佳结果
+        best_ind = self.evo_sch.best_ind
+        
+    def get_feedback_event():
+        # 等待事件并获取判断资源是否失配的信息
+        pass
+    
+    def check_resources_and_wait(topic, agent_events):
+        # 同时等待获取资源信息的事件和agent设置的事件
+        pass
+
+    def _evaluate_resources_for_all_agents(self):
+        """
+        异步评估所有agent类型的资源状态，并设置相应的事件
+        """
+        # 确保resource_events字典已初始化
+        if not hasattr(self, 'resource_feedback_events'):
+            self.resource_feedback_events = {}
+            self.resource_feedback_info = {}
+        
+        # 获取所有任务类型
+        task_types = ['simulate', 'sample', 'train', 'infer']
+        
+        # 为每种任务类型评估资源状态
+        for task_type in task_types:
+            try:
+                permit, info = self.acquire_resources(task_type)
+                topic_method_mapping = {
+                    'simulate': 'run_calculator',
+                    'sample': 'run_sampling',
+                    'train': 'train',
+                    'infer': 'evaluate'
+                }
+                method = topic_method_mapping.get(task_type, None)
+                
+                # 确保该方法有对应的事件
+                if method not in self.resource_feedback_events:
+                    self.resource_feedback_events[method] = threading.Event()
+                    self.resource_feedback_info[method] = {'permit': 0, 'reason': 'not evaluated yet'}
+                
+                # 根据评估结果设置或清除事件
+                if permit == 1:
+                    self.resource_feedback_events[method].set()
+                    self.resource_feedback_info[method] = info
+                    self.resource_feedback_info[method]['permit'] = 1
+                    logger.info(f"Setting resource event for {task_type} - additional tasks can be submitted")
+                else:
+                    self.resource_feedback_events[method].clear()
+                    self.resource_feedback_info[method] = info
+                    self.resource_feedback_info[method]['permit'] = 0
+                    logger.info(f"Clearing resource event for {task_type} - no additional tasks should be submitted")
+            except Exception as e:
+                logger.error(f"Error evaluating resources for {task_type}: {e}")
+            
     def run_sch(self, method = "ga", model_type="powSum"):
         """运行调度器
 
@@ -372,6 +516,8 @@ class SmartScheduler:
             best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
             self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
             self.best_result = self.evo_sch.best_ind
+            
+            self._evaluate_resources_for_all_agents()
             return best_allocation
         elif method == "mrsa":
             with self.sch_lock:

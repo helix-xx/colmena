@@ -28,7 +28,7 @@ class SingletonClass(metaclass=SingletonMeta):
 
 
 class Sch_data(SingletonClass):
-    def __init__(self, methods, available_resources):
+    def __init__(self, methods, available_resources, scheduler_type):
         self.result_list = {}
         self.sch_task_list = {}
         self.pilot_task = {}
@@ -37,6 +37,7 @@ class Sch_data(SingletonClass):
         self.avail_task_cap: int = None
         self.methods = methods
         self.available_resources = available_resources
+        self.scheduler_type = scheduler_type
 
     def init_hist_task(self, historical_task_data):
         self.historical_task_data:HistoricalData = historical_task_data
