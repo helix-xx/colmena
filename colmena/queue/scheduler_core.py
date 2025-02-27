@@ -411,30 +411,30 @@ class SmartScheduler:
                     # new_ind.task_array[-1]['gpu'] = resources['gpu']
                     new_ind.task_array[-1]['total_runtime'] = smart_scheduler.sch_data.Task_time_predictor.get_runtime(cpu, gpu, msg_size, method)
                     new_ind.update_task_id_index()
-                new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time, new_total_runtime = smart_scheduler.evo_sch.calc_utilization(new_ind)
-            #     print(
-            #         f"Node: {node}, "
-            #         f"New CPU Time: {new_total_cpu_time_per_node[node]}, "
-            #         f"Total CPU Time: {total_cpu_time_per_node[node]}"
-            #     )
-            #     print(
-            #         f"Node: {node}, "
-            #         f"New GPU Time: {new_total_gpu_time_per_node[node]}, "
-            #         f"Total GPU Time: {total_gpu_time_per_node[node]}"
-            #     )
-            #     print(
-            #         f"Node: {node}, "
-            #         f"New Completion Time: {new_completion_time[node]}, "
-            #         f"Completion Time: {completion_time[node]}"
-            #     )
-            #     print(
-            #         f"Node: {node}, "
-            #         f"New Runtime: {new_total_runtime[node]}, "
-            #         f"Total Runtime: {total_runtime[node]}"
-            #     )
-            # print(new_ind.task_array)
-                if new_completion_time[node] <= completion_time[node]:
-                    return 1, info
+                    new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time, new_total_runtime = smart_scheduler.evo_sch.calc_utilization(new_ind)
+                #     print(
+                #         f"Node: {node}, "
+                #         f"New CPU Time: {new_total_cpu_time_per_node[node]}, "
+                #         f"Total CPU Time: {total_cpu_time_per_node[node]}"
+                #     )
+                #     print(
+                #         f"Node: {node}, "
+                #         f"New GPU Time: {new_total_gpu_time_per_node[node]}, "
+                #         f"Total GPU Time: {total_gpu_time_per_node[node]}"
+                #     )
+                #     print(
+                #         f"Node: {node}, "
+                #         f"New Completion Time: {new_completion_time[node]}, "
+                #         f"Completion Time: {completion_time[node]}"
+                #     )
+                #     print(
+                #         f"Node: {node}, "
+                #         f"New Runtime: {new_total_runtime[node]}, "
+                #         f"Total Runtime: {total_runtime[node]}"
+                #     )
+                # print(new_ind.task_array)
+                    if new_completion_time[node] <= completion_time[node]:
+                        return 1, info
 
             
             return 0, info
