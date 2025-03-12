@@ -151,7 +151,7 @@ def run_mrsa_scheduler(sch_data:Sch_data, model_type="powSum", tasks=None):
             parse_mrsa_output(
                 output_folder=folder_name, 
                 sch_data=sch_data, 
-                distributed_tasks=node_task, 
+                distributed_tasks=node_tasks, 
                 dimensions=dimensions
             )
             
@@ -175,7 +175,7 @@ def run_mrsa_scheduler(sch_data:Sch_data, model_type="powSum", tasks=None):
     sch_data.best_ind = mrsa_ind  # type: ignore[attr-defined]
     return mrsa_ind.task_array
 
-def convert_to_mrsa_models(task_list, models, model_type, output_folder="fitune_surrogate", dimensions=2):
+def convert_to_mrsa_models(task_list, models, model_type, output_folder="fitune_surrogate", dimensions=2, resources=None):
     """将机器学习模型转换为MRSA支持的四种性能模型
     
     Args:
@@ -200,7 +200,7 @@ def convert_to_mrsa_models(task_list, models, model_type, output_folder="fitune_
     with open(output_file, 'w') as f:
         for task in task_list:
             # 估计参数
-            params = estimate_model_params(task, models, model_type)
+            params = estimate_model_params(task, models, model_type, resources=resources)
             
             # 根据维度生成不同格式的输出行
             if dimensions == 1:
@@ -224,7 +224,8 @@ def prepare_mrsa_input(sch_data, tasks, model_type="powSum", output_folder="fitu
         models=models,
         model_type=model_type,
         output_folder=output_folder,
-        dimensions=dimensions
+        dimensions=dimensions,
+        resources=sch_data.available_resources,
     )
     
     # 创建空的依赖关系文件夹和文件(因为不考虑依赖关系)
@@ -335,11 +336,13 @@ def validate_conversion(task, ml_model, params, model_type):
     
     return np.mean(errors), np.max(errors)
 
-def estimate_model_params(task, models, model_type):
+def estimate_model_params(task, models, model_type, resources):
     """估计单个任务的模型参数"""
     # 采样点设置
-    cpu_points = np.linspace(1, 24, 24)
-    gpu_points = np.linspace(1, 4, 4)
+    max_cpu = max(node["cpu"] for node in resources.values())
+    max_gpu = max(node["gpu"] for node in resources.values())
+    cpu_points = np.linspace(1, max_cpu, max_cpu)
+    gpu_points = np.linspace(1, max_gpu, max_gpu)
     
     base_cpu = 1
     base_gpu = 0
@@ -357,13 +360,15 @@ def estimate_model_params(task, models, model_type):
     configs_cpu = []
     configs_gpu = []
     
-    logger.info(f'Estimating model parameters for task {task["task_id"]}, serial time: {serial_time}')
+    # logger.info(f'Estimating model parameters for task {task["task_id"]}, serial time: {serial_time}')
     # CPU采样
     for cpu in cpu_points:
         time = models.get_runtime(cpu, base_gpu, msg_size, method)
         logger.debug(f'CPU sample: CPU={cpu}, time={time}, task={task}')
         times_cpu.append(time)
         configs_cpu.append([cpu])
+    
+    # logger.info(f'Estimating model parameters for task {task["task_id"]}, times_cpu: {times_cpu}')
     
     # GPU采样（固定最优CPU）如果原任务没有GPU，则不进行GPU采样
     if base_gpu != 0:
@@ -373,6 +378,8 @@ def estimate_model_params(task, models, model_type):
             logger.debug(f'GPU sample: GPU={gpu}, time={time}, task={task}')
             times_gpu.append(time)
             configs_gpu.append([optimal_cpu, gpu])
+    
+    # logger.info(f'Estimating model parameters for task {task["task_id"]}, times_gpu: {times_gpu}')
         
     # 3. 根据不同模型类型估计参数
     # 估计串行比例
