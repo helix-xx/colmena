@@ -336,109 +336,230 @@ def validate_conversion(task, ml_model, params, model_type):
     
     return np.mean(errors), np.max(errors)
 
+# def estimate_model_params(task, models, model_type, resources):
+#     """估计单个任务的模型参数"""
+#     # 采样点设置
+#     max_cpu = max(node["cpu"] for node in resources.values())
+#     max_gpu = max(node["gpu"] for node in resources.values())
+#     cpu_points = np.linspace(1, max_cpu, max_cpu)
+#     gpu_points = np.linspace(1, max_gpu, max_gpu)
+    
+#     base_cpu = 1
+#     base_gpu = 0
+#     if task['gpu'] >= 1:
+#         base_gpu = 1
+#     # 1. 估计串行部分 s0
+#     msg_size = task['feature_msg_size']
+#     method = task['name']
+
+#     serial_time = models.get_runtime(base_cpu, base_gpu, msg_size, method)
+    
+#     # 2. 分别采样CPU和GPU的影响
+#     times_cpu = []  # 仅CPU配置
+#     times_gpu = []  # CPU+GPU配置
+#     configs_cpu = []
+#     configs_gpu = []
+    
+#     logger.info(f'Estimating model parameters for task {task["task_id"]}, serial time: {serial_time}')
+#     # CPU采样
+#     for cpu in cpu_points:
+#         time = models.get_runtime(cpu, base_gpu, msg_size, method)
+#         logger.debug(f'CPU sample: CPU={cpu}, time={time}, task={task}')
+#         times_cpu.append(time)
+#         configs_cpu.append([cpu])
+    
+#     logger.info(f'Estimating model parameters for task {task["task_id"]}, times_cpu: {times_cpu}')
+    
+#     # GPU采样（固定最优CPU）如果原任务没有GPU，则不进行GPU采样
+#     if base_gpu != 0:
+#         optimal_cpu = cpu_points[np.argmin(times_cpu)]
+#         for gpu in gpu_points[1:]:  # 跳过gpu=0
+#             time = models.get_runtime(optimal_cpu, gpu, msg_size, method)
+#             logger.debug(f'GPU sample: GPU={gpu}, time={time}, task={task}')
+#             times_gpu.append(time)
+#             configs_gpu.append([optimal_cpu, gpu])
+    
+#     logger.info(f'Estimating model parameters for task {task["task_id"]}, times_gpu: {times_gpu}')
+        
+#     # 3. 根据不同模型类型估计参数
+#     # 估计串行比例
+#     s0 = min(times_cpu)  # 基础串行时间
+    
+#     # CPU部分
+#     X_cpu = np.array([1/c for c in cpu_points]).reshape(-1, 1)
+#     y_cpu = np.array(times_cpu) - s0
+#     reg_cpu = LinearRegression()
+#     reg_cpu.fit(X_cpu, y_cpu)
+#     s1 = max(0.1, float(reg_cpu.coef_[0]))  # CPU并行部分权重
+    
+#     # GPU部分 - 只有当任务需要GPU时才计算
+#     s2 = 0  # 默认GPU权重为0
+#     a2 = 1.0  # 默认GPU指数为1.0
+    
+#     if task['gpu'] > 0 and len(times_gpu) > 0:
+#         X_gpu = np.array([1/g for g in gpu_points[1:]]).reshape(-1, 1)
+#         y_gpu = np.array(times_gpu) - s0
+#         reg_gpu = LinearRegression()
+#         reg_gpu.fit(X_gpu, y_gpu)
+#         s2 = max(0.0, float(reg_gpu.coef_[0]))  # GPU并行部分权重
+        
+#     # 初始化参数
+#     params = {
+#         's0': s0,
+#         's1': s1,
+#         's2': s2,
+#         'a1': 1.0,  # Amdahl模型固定为1
+#         'a2': 1.0
+#     }
+    
+#     # 如果是Power模型，需要额外计算指数
+#     if not model_type.startswith('amd'):  # Power模型
+#         s0_amdahl = max(0, float(reg_cpu.intercept_))
+#         serial_time = min(s0-2, s0_amdahl) # 避免0或-inf
+#         # CPU部分
+#         X_cpu = np.log([c for c in cpu_points]).reshape(-1, 1)
+#         y_cpu = np.log(np.array(times_cpu) - serial_time)
+#         reg_cpu = LinearRegression()
+#         reg_cpu.fit(X_cpu, y_cpu)
+#         s1 = np.exp(reg_cpu.intercept_)
+#         a1 = -reg_cpu.coef_[0]
+        
+#         # GPU部分 - 只有当任务需要GPU时才计算
+#         if task['gpu'] > 0 and len(times_gpu) > 0:
+#             X_gpu = np.log(gpu_points[1:]).reshape(-1, 1)
+#             y_gpu = np.log(np.array(times_gpu) - serial_time)
+#             reg_gpu = LinearRegression()
+#             reg_gpu.fit(X_gpu, y_gpu)
+#             s2 = np.exp(reg_gpu.intercept_)
+#             a2 = -reg_gpu.coef_[0]
+        
+#         params = {
+#             's0': serial_time,
+#             's1': max(0.1, s1),
+#             's2': max(0, s2),
+#             'a1': max(0.1, min(a1, 1.0)),
+#             'a2': max(0.1, min(a2, 1.0))
+#         }
+        
+#     return params
+
 def estimate_model_params(task, models, model_type, resources):
-    """估计单个任务的模型参数"""
-    # 采样点设置
+    """改进的模型参数估计函数"""
+    # 采样点设置 - 使用更有效的指数间隔
     max_cpu = max(node["cpu"] for node in resources.values())
     max_gpu = max(node["gpu"] for node in resources.values())
     cpu_points = np.linspace(1, max_cpu, max_cpu)
     gpu_points = np.linspace(1, max_gpu, max_gpu)
     
+    # 基础配置
     base_cpu = 1
-    base_gpu = 0
-    if task['gpu'] >= 1:
-        base_gpu = 1
-    # 1. 估计串行部分 s0
-    msg_size = task['feature_msg_size']
-    method = task['name']
-
-    serial_time = models.get_runtime(base_cpu, base_gpu, msg_size, method)
+    base_gpu = 0 if task['gpu'] == 0 else 1
     
-    # 2. 分别采样CPU和GPU的影响
-    times_cpu = []  # 仅CPU配置
-    times_gpu = []  # CPU+GPU配置
-    configs_cpu = []
-    configs_gpu = []
-    
-    # logger.info(f'Estimating model parameters for task {task["task_id"]}, serial time: {serial_time}')
-    # CPU采样
+    # 收集采样数据 - 使用笛卡尔积采样CPU和GPU组合
+    sample_data = []
     for cpu in cpu_points:
-        time = models.get_runtime(cpu, base_gpu, msg_size, method)
-        logger.debug(f'CPU sample: CPU={cpu}, time={time}, task={task}')
-        times_cpu.append(time)
-        configs_cpu.append([cpu])
+        for gpu in gpu_points:
+            # 如果任务需要GPU但GPU=0，跳过此配置
+            if task['gpu'] > 0 and gpu == 0:
+                continue
+            
+            time = models.get_runtime(cpu, gpu, task['feature_msg_size'], task['name'])
+            sample_data.append({'cpu': cpu, 'gpu': gpu, 'time': time})
     
-    # logger.info(f'Estimating model parameters for task {task["task_id"]}, times_cpu: {times_cpu}')
+    df = pd.DataFrame(sample_data)
     
-    # GPU采样（固定最优CPU）如果原任务没有GPU，则不进行GPU采样
-    if base_gpu != 0:
-        optimal_cpu = cpu_points[np.argmin(times_cpu)]
-        for gpu in gpu_points[1:]:  # 跳过gpu=0
-            time = models.get_runtime(optimal_cpu, gpu, msg_size, method)
-            logger.debug(f'GPU sample: GPU={gpu}, time={time}, task={task}')
-            times_gpu.append(time)
-            configs_gpu.append([optimal_cpu, gpu])
-    
-    # logger.info(f'Estimating model parameters for task {task["task_id"]}, times_gpu: {times_gpu}')
+    # Amdahl模型估计
+    if model_type.startswith('amd'):
+        # 使用非线性优化估计Amdahl模型参数
+        from scipy.optimize import minimize
         
-    # 3. 根据不同模型类型估计参数
-    # 估计串行比例
-    s0 = min(times_cpu)  # 基础串行时间
-    
-    # CPU部分
-    X_cpu = np.array([1/c for c in cpu_points]).reshape(-1, 1)
-    y_cpu = np.array(times_cpu) - s0
-    reg_cpu = LinearRegression()
-    reg_cpu.fit(X_cpu, y_cpu)
-    s1 = max(0.1, float(reg_cpu.coef_[0]))  # CPU并行部分权重
-    
-    # GPU部分 - 只有当任务需要GPU时才计算
-    s2 = 0  # 默认GPU权重为0
-    a2 = 1.0  # 默认GPU指数为1.0
-    
-    if task['gpu'] > 0 and len(times_gpu) > 0:
-        X_gpu = np.array([1/g for g in gpu_points[1:]]).reshape(-1, 1)
-        y_gpu = np.array(times_gpu) - s0
-        reg_gpu = LinearRegression()
-        reg_gpu.fit(X_gpu, y_gpu)
-        s2 = max(0.0, float(reg_gpu.coef_[0]))  # GPU并行部分权重
-        
-    # 初始化参数
-    params = {
-        's0': s0,
-        's1': s1,
-        's2': s2,
-        'a1': 1.0,  # Amdahl模型固定为1
-        'a2': 1.0
-    }
-    
-    # 如果是Power模型，需要额外计算指数
-    if not model_type.startswith('amd'):  # Power模型
-        s0_amdahl = max(0, float(reg_cpu.intercept_))
-        serial_time = min(s0-2, s0_amdahl) # 避免0或-inf
-        # CPU部分
-        X_cpu = np.log([c for c in cpu_points]).reshape(-1, 1)
-        y_cpu = np.log(np.array(times_cpu) - serial_time)
-        reg_cpu = LinearRegression()
-        reg_cpu.fit(X_cpu, y_cpu)
-        s1 = np.exp(reg_cpu.intercept_)
-        a1 = -reg_cpu.coef_[0]
-        
-        # GPU部分 - 只有当任务需要GPU时才计算
-        if task['gpu'] > 0 and len(times_gpu) > 0:
-            X_gpu = np.log(gpu_points[1:]).reshape(-1, 1)
-            y_gpu = np.log(np.array(times_gpu) - serial_time)
-            reg_gpu = LinearRegression()
-            reg_gpu.fit(X_gpu, y_gpu)
-            s2 = np.exp(reg_gpu.intercept_)
-            a2 = -reg_gpu.coef_[0]
+        if task['gpu'] > 0:
+            # 使用双变量Amdahl模型
+            def amdahl_error(params):
+                s0, s1, s2 = params
+                errors = []
+                for _, row in df.iterrows():
+                    pred = s0 + s1/row['cpu'] + s2/max(1, row['gpu'])
+                    errors.append((pred - row['time'])**2)
+                return np.mean(errors)
+            
+            # 初始参数猜测和边界
+            x0 = [df['time'].min()*0.5, df['time'].max()*0.3, df['time'].max()*0.2]
+            bounds = [(0, df['time'].min()*0.9), (0.1, None), (0.1, None)]
+            
+            res = minimize(amdahl_error, x0, bounds=bounds, method='L-BFGS-B')
+            s0, s1, s2 = res.x
+            
+        else:
+            # 单变量Amdahl模型（仅CPU）
+            def amdahl_error(params):
+                s0, s1 = params
+                errors = []
+                for _, row in df.iterrows():
+                    pred = s0 + s1/row['cpu']
+                    errors.append((pred - row['time'])**2)
+                return np.mean(errors)
+            
+            x0 = [df['time'].min()*0.5, df['time'].max()*0.5]
+            bounds = [(0, df['time'].min()*0.9), (0.1, None)]
+            
+            res = minimize(amdahl_error, x0, bounds=bounds, method='L-BFGS-B')
+            s0, s1 = res.x
+            s2 = 0 if task['gpu'] == 0 else 10  # 为了强制GPU>0，设置较大的s2
         
         params = {
-            's0': serial_time,
-            's1': max(0.1, s1),
-            's2': max(0, s2),
-            'a1': max(0.1, min(a1, 1.0)),
-            'a2': max(0.1, min(a2, 1.0))
+            's0': s0,
+            's1': s1,
+            's2': s2,
+            'a1': 1.0,
+            'a2': 1.0
         }
+        
+    else:  # Power模型
+        # 使用非线性优化估计Power模型参数
+        from scipy.optimize import minimize
+        
+        if task['gpu'] > 0:
+            # 双变量Power模型
+            def power_error(params):
+                s0, s1, a1, s2, a2 = params
+                errors = []
+                for _, row in df.iterrows():
+                    pred = s0 + s1/(row['cpu']**a1) + s2/(max(1, row['gpu'])**a2)
+                    errors.append((pred - row['time'])**2)
+                return np.mean(errors)
+            
+            x0 = [df['time'].min()*0.3, df['time'].max()*0.3, 0.5, df['time'].max()*0.4, 0.5]
+            bounds = [(0, df['time'].min()*0.8), (0.1, None), (0.1, 2.0), (0.1, None), (0.1, 2.0)]
+            
+            res = minimize(power_error, x0, bounds=bounds, method='L-BFGS-B')
+            s0, s1, a1, s2, a2 = res.x
+            
+        else:
+            # 单变量Power模型（仅CPU）
+            def power_error(params):
+                s0, s1, a1 = params
+                errors = []
+                for _, row in df.iterrows():
+                    pred = s0 + s1/(row['cpu']**a1)
+                    errors.append((pred - row['time'])**2)
+                return np.mean(errors)
+            
+            x0 = [df['time'].min()*0.3, df['time'].max()*0.7, 0.5]
+            bounds = [(0, df['time'].min()*0.8), (0.1, None), (0.1, 2.0)]
+            
+            res = minimize(power_error, x0, bounds=bounds, method='L-BFGS-B')
+            s0, s1, a1 = res.x
+            s2 = 0 if task['gpu'] == 0 else 10  # 为了强制GPU>0，设置较大的s2
+            a2 = 0.5  # 默认值
+        
+        params = {
+            's0': s0,
+            's1': s1,
+            's2': s2,
+            'a1': a1,
+            'a2': a2
+        }
+        
         
     return params
