@@ -12,9 +12,10 @@ import concurrent.futures
 logger = logging.getLogger(__name__)
 
 from colmena.models import Result
-from .evo_sch import evosch2, individual
+from .evo_sch import evosch2, individual, precalculate_fixed_state
 from .fcfs_sch import FCFSScheduler
 from .monitor import available_task, HistoricalData, Sch_data
+from .mrsa_sch import run_mrsa_scheduler
 
 
 class SchedulerTimer:
@@ -41,7 +42,7 @@ class SchedulerTimer:
             with self.timer_lock:
                 self.timer = None
 
-    def reset(self, task_lists: np.ndarray = None):
+    def reset(self, task_lists: np.ndarray):
         """Reset the scheduling timer based on running tasks and scheduling window
         
         Args:
@@ -77,8 +78,8 @@ class SchedulerTimer:
                 if node_last_tasks:
                     # Find the earliest start time among last tasks
                     earliest_start = float('inf')
-                    earliest_node = None
-                    earliest_task = None
+                    # earliest_node = None
+                    # earliest_task = None
                     
                     for node, task in node_last_tasks.items():
                         if task['start_time'] < earliest_start:
@@ -124,10 +125,10 @@ class FeedbackEvent():
         for method in methods:
             self.feedback_events[method] = threading.Event()
             
-    def set_event():
+    def set_event(self):
         pass
     
-    def get_event():
+    def get_event(self):
         pass
 
     
@@ -159,7 +160,7 @@ class SmartScheduler:
         self.exceed_completion_time_limit = 1
         
         # scheduler timer
-        self.scheduler_timer:SchedulerTimer = None
+        # self.scheduler_timer:SchedulerTimer = None
         self._scheduling_time = scheduling_time
         # scheduler result_ind, allocation in available task class
         self.best_result = None
@@ -260,7 +261,7 @@ class SmartScheduler:
     #         all_tasks = self.sch_data.avail_task.dummy_add_task_id(method, pilot_task['task_id'], all_tasks=all_tasks)
     #         self.sch_data.add_sch_task(pilot_task)
     #         _ = self.run_sch()
-    #         new_ind = self.evo_sch.best_ind
+    #         new_ind = self.sch_data.best_ind
     #         new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time = self.evo_sch.calc_utilization(new_ind)
     #         self.sch_data.pop_sch_task(pilot_task)
             
@@ -287,6 +288,7 @@ class SmartScheduler:
     #             )
                 
     #             utilization_improvement[node] = {
+        
     #                 'cpu': cpu_improvement_ratio,
     #                 'gpu': gpu_improvement_ratio
     #             }
@@ -376,7 +378,7 @@ class SmartScheduler:
             # all_tasks = self.sch_data.avail_task.dummy_add_task_id(method, pilot_task['task_id'], all_tasks=all_tasks)
             # self.sch_data.add_sch_task(pilot_task)
             # _ = self.run_sch()
-            # new_ind = self.evo_sch.best_ind
+            # new_ind = self.sch_data.best_ind
             # new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time = self.evo_sch.calc_utilization(new_ind)
             # self.sch_data.pop_sch_task(pilot_task)
             
@@ -443,7 +445,7 @@ class SmartScheduler:
         # 在进行完调度后计算资源失配情况
         
         # 获取调度的最佳结果
-        best_ind = self.evo_sch.best_ind
+        best_ind = self.sch_data.best_ind
         
     def get_feedback_event():
         # 等待事件并获取判断资源是否失配的信息
@@ -506,21 +508,24 @@ class SmartScheduler:
         Returns:
             _type_: _description_
         """
-        if method == "ga":
         # run evo sch
-            # with self.sch_lock: # 异步进行不需要加锁，每个调度算法都有自己的可调度任务
-            # all_tasks = self.sch_data.avail_task.get_all()
-            # self.sch_data.avail_task.move_available_to_scheduled(all_tasks) # 线程安全 每次调度时只考虑未被调度的任务
-            all_tasks, scheduled_array = self.sch_data.avail_task.get_schedulable_tasks(self.scheduler_timer.scheduling_time)
-            self.sch_data.avail_task.move_available_to_scheduled(all_tasks)
+        # with self.sch_lock: # 异步进行不能在这里加锁，每个调度算法都有自己的可调度任务 目前这里没有考虑异步的情况是否正常运行
+        # init / fill task database
+        # self.sch_data.Task_time_predictor.train(self.sch_data.historical_task_data.historical_data) # 可开启每次调度时训练一次模型
+        self.sch_data.Task_time_predictor.fill_features_from_new_task(self.available_resources, self.sch_data.sch_task_list)
+        self.sch_data.Task_time_predictor.fill_runtime_records_with_predictor()
+        
+        all_tasks, scheduled_array = self.sch_data.avail_task.get_schedulable_tasks(self.scheduler_timer.scheduling_time)
+        self.sch_data.avail_task.move_available_to_scheduled(all_tasks)
+        
+        precalculate_fixed_state(self.sch_data, self.sch_data.running_task_node, self.sch_data.avail_task.allocations)
+        if method == "ga":
             best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
-            self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
-            self.best_result = self.evo_sch.best_ind
-            
-            self._evaluate_resources_for_all_agents()
-            return best_allocation
+            self.best_result = self.sch_data.best_ind
+            self._evaluate_resources_for_all_agents() # 通过反馈 动态调整任务负载
         elif method == "mrsa":
-            with self.sch_lock:
-                self.sch_data.Task_time_predictor.train(self.sch_data.historical_task_data.historical_data)
-                best_allocation = self.run_mrsa_scheduler(model_type=model_type)
-                return best_allocation
+            best_allocation = run_mrsa_scheduler(sch_data=self.sch_data, model_type=model_type, tasks=all_tasks)
+            
+        self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
+        
+        return best_allocation

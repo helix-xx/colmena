@@ -38,7 +38,6 @@ logger = logging.getLogger(__name__)
 # setup_path()
 
 
-
 def dataclass_to_dict(obj):
     if is_dataclass(obj):
         return asdict(obj)
@@ -653,6 +652,49 @@ def cached_calculate_task_resource_area(
     # 调用原始 numba 函数
     return _calculate_task_resource_area(task_runtime, task_cpu, task_gpu)
 
+def precalculate_fixed_state(sch_data:Sch_data, running_tasks_all, queued_tasks_all):
+    """预计算固定任务状态"""
+    sch_data.fixed_state = {}
+    for node in sch_data.available_resources.keys():
+        running_tasks = running_tasks_all[node]
+        queued_tasks = queued_tasks_all[queued_tasks_all['node'] == node]
+        
+        # 转换running_tasks为数组
+        if running_tasks is not None and len(running_tasks)>0:
+            running_finish_times = np.array([task['finish_time'] for task in running_tasks], dtype=np.float64)
+            running_cpus = np.array([task['cpu'] for task in running_tasks], dtype=np.int32)
+            running_gpus = np.array([task['gpu'] for task in running_tasks], dtype=np.int32)
+        else:
+            running_finish_times = np.array([], dtype=np.float64)
+            running_cpus = np.array([], dtype=np.int32)
+            running_gpus = np.array([], dtype=np.int32)
+            
+        # 转换queued_tasks为数组
+        if queued_tasks is not None and len(queued_tasks)>0:
+            queued_task_cpu = np.array([task['cpu'] for task in queued_tasks], dtype=np.int32)
+            queued_task_gpu = np.array([task['gpu'] for task in queued_tasks], dtype=np.int32)
+            queued_task_runtime = np.array([task['total_runtime'] for task in queued_tasks], dtype=np.float64)
+        else:
+            queued_task_cpu = np.array([], dtype=np.int32)
+            queued_task_gpu = np.array([], dtype=np.int32)
+            queued_task_runtime = np.array([], dtype=np.float64)
+            
+        # 预计算状态
+        sch_data.fixed_state[node] = _precalculate_fixed_tasks_state(
+            queued_task_cpu,
+            queued_task_gpu,
+            queued_task_runtime,
+            running_finish_times,
+            running_cpus,
+            running_gpus,
+            sch_data.available_resources[node]['cpu'],
+            sch_data.available_resources[node]['gpu'],
+            time.time()
+        )
+        
+    if sch_data.fixed_state is None:
+        raise ValueError("Fixed tasks resource allocation failed")
+
 
 # multiprocessing, class should be pickleable
 class evosch2:
@@ -685,16 +727,10 @@ class evosch2:
         self.population_node = defaultdict(
             list
         )  # {node: [individual,,,],,,} # store all individual on all node
-
-        ## log the running task for track the resource and time
-        self.running_task: list[dict[str, int]] = (
-            []
-        )  # {'task_id': 1, 'name': 'simulate', 'start_time': 100, 'finish_time': 200, 'total_time': 100, resources:{'cpu':3,'gpu':0}}
-        self.running_task_node: dict = defaultdict(list)
+        
         self.current_time = (
             0  # current running time for compute  while trigger evo_scheduler
         )
-        self.best_ind: individual = None
 
         # 添加日志相关的初始化
         self.timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -731,9 +767,9 @@ class evosch2:
             self.resources['node']['cpu'] += result_obj.resources.cpu
             self.resources['node']['gpu'] += len(gpu_value)
             self.resources['node']['gpu_devices'].extend(gpu_value)
-            for task in  self.running_task_node[node]:
+            for task in  self.sch_data.running_task_node[node]:
                 if task['task_id'] == result_obj.task_id:
-                    self.running_task_node[node].remove(task)
+                    self.sch_data.running_task_node[node].remove(task)
 
     def get_dict_list_nums(self, dict_list: dict):
         """
@@ -1104,7 +1140,7 @@ class evosch2:
             return 0.0, 0, 0.0
 
         node = task_array[0]['node']
-        if self.fixed_state[node] is None:
+        if self.sch_data.fixed_state[node] is None:
             raise ValueError("Fixed state not calculated")
 
         # 提取简单数组
@@ -1116,9 +1152,9 @@ class evosch2:
         task_cpu_tuple = tuple(task_cpu)
         task_gpu_tuple = tuple(task_gpu)
         task_runtime_tuple = tuple(task_runtime)
-        ongoing_times_tuple = tuple(self.fixed_state[node][4])
-        ongoing_cpus_tuple = tuple(self.fixed_state[node][5])
-        ongoing_gpus_tuple = tuple(self.fixed_state[node][6])
+        ongoing_times_tuple = tuple(self.sch_data.fixed_state[node][4])
+        ongoing_cpus_tuple = tuple(self.sch_data.fixed_state[node][5])
+        ongoing_gpus_tuple = tuple(self.sch_data.fixed_state[node][6])
 
         # 使用缓存的 _calculate_completion_time_with_state
         try:
@@ -1126,10 +1162,10 @@ class evosch2:
                 task_cpu_tuple,
                 task_gpu_tuple,
                 task_runtime_tuple,
-                self.fixed_state[node][0],  # current_time
-                self.fixed_state[node][1],  # avail_cpu
-                self.fixed_state[node][2],  # avail_gpu
-                self.fixed_state[node][3],  # task_count
+                self.sch_data.fixed_state[node][0],  # current_time
+                self.sch_data.fixed_state[node][1],  # avail_cpu
+                self.sch_data.fixed_state[node][2],  # avail_gpu
+                self.sch_data.fixed_state[node][3],  # task_count
                 ongoing_times_tuple,
                 ongoing_cpus_tuple,
                 ongoing_gpus_tuple,
@@ -1139,13 +1175,13 @@ class evosch2:
         except Exception as e:
             self.write_log("_calculate_completion_time_with_state error")
             self.write_log(f"Error occurred during resource allocation: {e}")
-            self.write_log(self.fixed_state[node], task_cpu, task_gpu, task_runtime)
+            self.write_log(self.sch_data.fixed_state[node], task_cpu, task_gpu, task_runtime)
             raise e
 
         if completion_time <= 0:
             self.write_log("_calculate_completion_time_with_state error")
             self.write_log(task_array)
-            self.write_log(self.fixed_state)
+            self.write_log(self.sch_data.fixed_state)
             raise ValueError("Resource allocation failed")
 
         # 使用缓存的 _calculate_task_resource_area
@@ -1704,49 +1740,6 @@ class evosch2:
         # 更新索引映射
         a_ind.update_task_id_index()
         
-    def precalculate_fixed_state(self, running_tasks_all, queued_tasks_all):
-        """预计算固定任务状态"""
-        self.fixed_state = {}
-        for node in self.node_resources.keys():
-            running_tasks = running_tasks_all[node]
-            queued_tasks = queued_tasks_all[queued_tasks_all['node'] == node]
-            
-            # 转换running_tasks为数组
-            if running_tasks is not None and len(running_tasks)>0:
-                running_finish_times = np.array([task['finish_time'] for task in running_tasks], dtype=np.float64)
-                running_cpus = np.array([task['cpu'] for task in running_tasks], dtype=np.int32)
-                running_gpus = np.array([task['gpu'] for task in running_tasks], dtype=np.int32)
-            else:
-                running_finish_times = np.array([], dtype=np.float64)
-                running_cpus = np.array([], dtype=np.int32)
-                running_gpus = np.array([], dtype=np.int32)
-                
-            # 转换queued_tasks为数组
-            if queued_tasks is not None and len(queued_tasks)>0:
-                queued_task_cpu = np.array([task['cpu'] for task in queued_tasks], dtype=np.int32)
-                queued_task_gpu = np.array([task['gpu'] for task in queued_tasks], dtype=np.int32)
-                queued_task_runtime = np.array([task['total_runtime'] for task in queued_tasks], dtype=np.float64)
-            else:
-                queued_task_cpu = np.array([], dtype=np.int32)
-                queued_task_gpu = np.array([], dtype=np.int32)
-                queued_task_runtime = np.array([], dtype=np.float64)
-                
-            # 预计算状态
-            self.fixed_state[node] = _precalculate_fixed_tasks_state(
-                queued_task_cpu,
-                queued_task_gpu,
-                queued_task_runtime,
-                running_finish_times,
-                running_cpus,
-                running_gpus,
-                self.node_resources[node]['cpu'],
-                self.node_resources[node]['gpu'],
-                time.time()
-            )
-            
-        if self.fixed_state is None:
-            raise ValueError("Fixed tasks resource allocation failed")
-        
     def run_ga(
         self,
         all_tasks:list[dict[str, int]],
@@ -1759,15 +1752,13 @@ class evosch2:
         start_time = time.time()
         task_nums = self.at.get_task_nums(all_tasks)
         self.write_log(f"\nStarting GA with {task_nums} tasks, tasks list: {all_tasks}")
-        self.write_log(f"Running tasks: {self.running_task_node}")
+        self.write_log(f"Running tasks: {self.sch_data.running_task_node}")
         self.write_log(f"Available resources: {self.node_resources}")
         
-        # fill features from new task
-        self.sch_data.Task_time_predictor.fill_features_from_new_task(self.node_resources, self.sch_data.sch_task_list)
-        self.sch_data.Task_time_predictor.fill_runtime_records_with_predictor()
-        self.write_log(f"Predictor filled with new task features, consuming time: {time.time() - start_time:.2f} seconds")
-        
-        self.precalculate_fixed_state(self.running_task_node, self.sch_data.avail_task.allocations)
+        # fill features from new task. move to scheduler_core run_sch
+        # self.sch_data.Task_time_predictor.fill_features_from_new_task(self.node_resources, self.sch_data.sch_task_list)
+        # self.sch_data.Task_time_predictor.fill_runtime_records_with_predictor()
+        # self.write_log(f"Predictor filled with new task features, consuming time: {time.time() - start_time:.2f} seconds")
         
         # run no record task
         ind = self.detect_no_his_task(all_tasks)
@@ -1785,12 +1776,6 @@ class evosch2:
         )
         scores = [self.fitness(ind) for ind in self.population]
         self.population = [self.population[i] for i in np.argsort(scores)[::-1]]
-
-        # only one task , submit directly
-        # if self.at.get_total_nums(all_tasks) == 1:
-        #     logger.info(f"Only one task, submit directly")
-        #     self.best_ind = self.population[-1]  # predifined resources at last in list
-        #     return self.best_ind.task_array
 
         score = self.population[0].score
         logger.info(f"initial score is {score}")
@@ -1844,7 +1829,7 @@ class evosch2:
 
         # best ind global
         best_ind = max(self.population, key=lambda ind: ind.score)
-        self.best_ind = best_ind
+        self.sch_data.best_ind = best_ind
         # best_allocation = best_ind.task_allocation
         best_allocation = best_ind.task_array
         self.write_log("\nFinal Results:")
@@ -1858,5 +1843,5 @@ class evosch2:
         # self.at.move_allocation_to_scheduled(all_tasks, best_allocation) # should consider lock
         
         ## necessary clean
-        # self.fixed_state = {}
+        # self.sch_data.fixed_state = {}
         return best_allocation

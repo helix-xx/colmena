@@ -259,9 +259,9 @@ class ColmenaQueues:
                 self.smart_sch.evo_sch.resources[node]['gpu_devices'].extend(gpu_value)
                 self.smart_sch.evo_sch.resources[node]['gpu_devices'].sort()
                 # setattr(result_obj.resources, 'gpu', len(gpu_value))
-                for task in self.smart_sch.evo_sch.running_task_node[node]:
+                for task in self.smart_sch.sch_data.running_task_node[node]:
                     if task['task_id'] == result_obj.task_id:
-                        self.smart_sch.evo_sch.running_task_node[node].remove(task)
+                        self.smart_sch.sch_data.running_task_node[node].remove(task)
                         break
 
                 if result_obj.success:
@@ -524,7 +524,7 @@ class ColmenaQueues:
                             'finish_time': start_time + task['total_runtime'],
                         }
                         
-                        self.smart_sch.evo_sch.running_task_node[node].append(predict_task)
+                        self.smart_sch.sch_data.running_task_node[node].append(predict_task)
 
                         result = self.smart_sch.sch_data.pop_result_obj(task['task_id'])
                         result.inputs[1]['cpu'] = cpu_value

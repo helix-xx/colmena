@@ -8,6 +8,7 @@ import logging  # 用于日志记录 `logger.warning`
 import uuid
 import numpy as np
 import time
+from collections import defaultdict
 
 from .predictor import TaskTimePredictor 
 
@@ -29,15 +30,21 @@ class SingletonClass(metaclass=SingletonMeta):
 
 class Sch_data(SingletonClass):
     def __init__(self, methods, available_resources, scheduler_type):
+        # 延迟初始化
         self.result_list = {}
         self.sch_task_list = {}
         self.pilot_task = {}
-        self.Task_time_predictor: TaskTimePredictor = None
-        self.avail_task: available_task = None
-        self.avail_task_cap: int = None
+        self.Task_time_predictor: TaskTimePredictor
+        self.avail_task: available_task
+        self.avail_task_cap: int
         self.methods = methods
         self.available_resources = available_resources
+        ## log the running task for track the resource and time
+        self.running_task_node: dict = defaultdict(list) # {'task_id': 1, 'name': 'simulate', 'start_time': 100, 'finish_time': 200, 'total_time': 100, resources:{'cpu':3,'gpu':0}}
         self.scheduler_type = scheduler_type
+        
+        # optional test
+        self.usr_path: str
 
     def init_hist_task(self, historical_task_data):
         self.historical_task_data:HistoricalData = historical_task_data
