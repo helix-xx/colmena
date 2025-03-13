@@ -514,7 +514,7 @@ class SmartScheduler:
         # self.sch_data.Task_time_predictor.train(self.sch_data.historical_task_data.historical_data) # 可开启每次调度时训练一次模型
         self.sch_data.Task_time_predictor.fill_features_from_new_task(self.available_resources, self.sch_data.sch_task_list)
         self.sch_data.Task_time_predictor.fill_runtime_records_with_predictor()
-        
+        logger.info(f"available task:{self.sch_data.avail_task.task_ids}, scheduled task: {self.sch_data.avail_task.scheduled_task}")
         all_tasks, scheduled_array = self.sch_data.avail_task.get_schedulable_tasks(self.scheduler_timer.scheduling_time)
         self.sch_data.avail_task.move_available_to_scheduled(all_tasks)
         
@@ -524,7 +524,10 @@ class SmartScheduler:
             self.best_result = self.sch_data.best_ind
             self._evaluate_resources_for_all_agents() # 通过反馈 动态调整任务负载
         elif method == "mrsa":
-            best_allocation = run_mrsa_scheduler(sch_data=self.sch_data, model_type=model_type, tasks=all_tasks)
+            best_allocation = run_mrsa_scheduler(sch_data=self.sch_data, model_type=model_type, tasks=all_tasks) # not with start time finish time infomation
+            mrsa_ind = self.sch_data.best_ind
+            self.evo_sch.fitness(mrsa_ind)
+            best_allocation = mrsa_ind.task_array
             
         self.sch_data.avail_task.move_allocation_to_scheduled(best_allocation) # 线程安全
         
