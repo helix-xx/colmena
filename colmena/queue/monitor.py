@@ -43,6 +43,10 @@ class Sch_data(SingletonClass):
         self.running_task_node: dict = defaultdict(list) # {'task_id': 1, 'name': 'simulate', 'start_time': 100, 'finish_time': 200, 'total_time': 100, resources:{'cpu':3,'gpu':0}}
         self.scheduler_type = scheduler_type
         
+        # initial state before running
+        self.fixed_state = {}
+        self.best_ind = None
+        
         # optional test
         self.usr_path: str
 

@@ -520,7 +520,7 @@ class SmartScheduler:
         
         precalculate_fixed_state(self.sch_data, self.sch_data.running_task_node, self.sch_data.avail_task.allocations)
         if method == "ga":
-            best_allocation = self.evo_sch.run_ga(all_tasks, pool = self.pool)
+            best_allocation = self.evo_sch.run_ga_v2(all_tasks, pool = self.pool)
             self.best_result = self.sch_data.best_ind
             self._evaluate_resources_for_all_agents() # 通过反馈 动态调整任务负载
         elif method == "mrsa":

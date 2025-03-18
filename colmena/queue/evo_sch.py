@@ -1244,7 +1244,7 @@ class evosch2:
         # 存储调度指标
         ind.completion_time = np.max(completion_times)
         ind.resource_area = np.sum(resource_areas)
-        ind.total_runtime = np.max(total_runtimes)
+        ind.total_runtime = np.max(total_runtimes) # last task finish time
         
         # 计算适应度分数
         ind.score = -ind.completion_time
@@ -1283,7 +1283,7 @@ class evosch2:
         population = []
 
         # 生成population_size个随机资源分配的个体
-        for _ in range(population_size):
+        for _ in range(max(population_size-2,1)):
             ind = individual(tasks_nums=task_nums, total_resources=self.node_resources)
             task_idx = 0
             which_node = self.generate_node()
@@ -1450,19 +1450,21 @@ class evosch2:
             for task_id in ind1._task_id_index:
                 idx1 = ind1._task_id_index[task_id]
                 idx2 = ind2._task_id_index[task_id]
-                new_ind.task_array[idx1]['cpu'] = (
-                    ind1.task_array[idx1]['cpu'] + ind2.task_array[idx2]['cpu']
-                ) // 2
-                new_ind.task_array[idx1]['gpu'] = (
-                    ind1.task_array[idx1]['gpu'] + ind2.task_array[idx2]['gpu']
-                ) // 2
+                
+                node_cpu = self.node_resources[new_ind.task_array[idx1]['node']]['cpu']
+                new_cpu = (ind1.task_array[idx1]['cpu'] + ind2.task_array[idx2]['cpu']) // 2
+                new_ind.task_array[idx1]['cpu'] = min(new_cpu, node_cpu)  
+                
+                node_gpu = self.node_resources[new_ind.task_array[idx1]['node']]['gpu']
+                new_gpu = (ind1.task_array[idx1]['gpu'] + ind2.task_array[idx2]['gpu']) // 2
+                new_ind.task_array[idx1]['gpu'] = min(new_gpu, node_gpu)  
         except KeyError:
             print(f"Task {task_id} not found in both individuals")
             print(ind1.task_array)
             print(ind2.task_array)
             return
         
-                # 验证没有重复task_id
+        # 验证没有重复task_id
         task_ids = [task['task_id'] for task in new_ind.task_array]
         assert len(set(task_ids)) == len(task_ids), f"Duplicate task_ids found after copy: {task_ids}"
         population.append(new_ind)
@@ -1528,41 +1530,57 @@ class evosch2:
         new_ind1.update_task_id_index()
         new_ind2.update_task_id_index()
         
-                # 验证没有重复task_id
+        # 验证没有重复task_id
         task_ids = [task['task_id'] for task in new_ind1.task_array]
         assert len(set(task_ids)) == len(task_ids), f"Duplicate task_ids found after copy: {task_ids}"
         
-                # 验证没有重复task_id
+        # 验证没有重复task_id
         task_ids = [task['task_id'] for task in new_ind2.task_array]
         assert len(set(task_ids)) == len(task_ids), f"Duplicate task_ids found after copy: {task_ids}"
         population.extend([new_ind1, new_ind2])
 
     def opt_gpu(self, population: list[individual], ind: individual):
-        new_ind = ind.copy()
-        task_array = new_ind.task_array
-        
-        # 筛选GPU任务并排序
-        gpu_mask = task_array['gpu'] >= 1
-        gpu_tasks = task_array[gpu_mask]
-        if len(gpu_tasks) == 0:
-            return
-        
-        sorted_indices = np.argsort(-gpu_tasks['total_runtime'])  # 倒序排序
-        
-        # 批量调整前1/3
-        top_count = max(1, len(sorted_indices) // 3)
-        top_indices = sorted_indices[:top_count]
-        increments = np.random.choice([1, 2], size=top_count)
-        new_gpu = np.clip(gpu_tasks[top_indices]['gpu'] + increments, 1, ind.total_resources['gpu'])
-        task_array[gpu_mask][top_indices]['gpu'] = new_gpu
-        
-        # 批量调整后1/3
-        bottom_indices = sorted_indices[-top_count:]
-        decrements = np.random.choice([1], size=top_count)
-        new_gpu = np.clip(gpu_tasks[bottom_indices]['gpu'] - decrements, 1, None)
-        task_array[gpu_mask][bottom_indices]['gpu'] = new_gpu
-        
-        population.append(new_ind)
+            new_ind = ind.copy()
+            task_array = new_ind.task_array
+            
+            # 筛选GPU任务并排序
+            gpu_mask = task_array['gpu'] >= 1
+            gpu_tasks = task_array[gpu_mask]
+            if len(gpu_tasks) == 0:
+                return
+            
+            sorted_indices = np.argsort(-gpu_tasks['total_runtime'])  # 倒序排序
+            
+            # 批量调整前1/3
+            top_count = max(1, len(sorted_indices) // 3)
+            if top_count > 0:
+                top_indices = sorted_indices[:top_count]
+                
+                # 获取对应节点的GPU限制
+                selected_nodes = gpu_tasks[top_indices]['node']
+                node_limits = np.array([self.node_resources[node]['gpu'] for node in selected_nodes])
+                
+                increments = np.random.choice([1, 2], size=top_count)
+                new_gpu = np.clip(gpu_tasks[top_indices]['gpu'] + increments, 
+                                1, node_limits)
+                
+                task_array[gpu_mask][top_indices]['gpu'] = new_gpu
+            
+            # 批量调整后1/3
+            if top_count > 0:
+                bottom_indices = sorted_indices[-top_count:]
+                
+                # 获取对应节点的GPU限制
+                selected_nodes = gpu_tasks[bottom_indices]['node']
+                node_limits = np.array([self.node_resources[node]['gpu'] for node in selected_nodes])
+                
+                decrements = np.random.choice([1], size=top_count)
+                new_gpu = np.clip(gpu_tasks[bottom_indices]['gpu'] - decrements,
+                                1, node_limits)
+                
+                task_array[gpu_mask][bottom_indices]['gpu'] = new_gpu
+            
+            population.append(new_ind)
 
     def opt1(self, population: list, ind: individual):
         new_ind = ind.copy()
@@ -1643,6 +1661,56 @@ class evosch2:
         new_ind.update_task_id_index()
         
         population.append(new_ind)
+        
+    def validate_resource_for_task(task, node, resources):
+        """验证任务资源是否符合节点容量"""
+        return (task['cpu'] <= resources[node]['cpu'] and 
+                task['gpu'] <= resources[node]['gpu'])
+        
+    # 需要测试是否有效
+    def node_migration_mutation(self, population: list, ind: individual):
+        """节点迁移变异 - 尝试将任务迁移到其他合适的节点"""
+        new_ind = ind.copy()
+        task_array = new_ind.task_array
+        
+        # 随机选择一个节点和该节点上的任务
+        nodes_with_tasks = np.unique(task_array['node'])  # unique操作可能耗时多
+        if len(nodes_with_tasks) < 2:  # 需要至少两个节点才能迁移
+            return
+            
+        source_node = random.choice(nodes_with_tasks)
+        source_mask = task_array['node'] == source_node
+        source_tasks = task_array[source_mask]
+        
+        if len(source_tasks) == 0:
+            return
+            
+        # 随机选择一个任务
+        task_idx = random.choice(range(len(source_tasks)))
+        task = source_tasks[task_idx]
+        global_idx = new_ind.get_task_index(task['task_id'])
+        
+        # 选择其他可能的目标节点
+        other_nodes = [node for node in self.node_resources.keys() if node != source_node]
+        random.shuffle(other_nodes)
+        
+        # 尝试迁移到其他节点
+        for target_node in other_nodes:
+            # 检查目标节点是否有足够资源
+            if self.validate_resource_for_task(task, target_node, self.node_resources):
+                
+                # 迁移任务
+                task_array[global_idx]['node'] = target_node
+                new_ind.update_task_id_index()
+                
+                # 验证没有重复task_id
+                task_ids = [t['task_id'] for t in task_array]
+                assert len(set(task_ids)) == len(task_ids), f"Duplicate task_ids found after migration: {task_ids}"
+                
+                population.append(new_ind)
+                return True
+                
+        return False  # 没有找到合适的目标节点
 
     def process_individual_opt(self, population):
         # logger.info(f"process_infividual:{ind1.individual_id}")
@@ -1844,4 +1912,141 @@ class evosch2:
         
         ## necessary clean
         # self.sch_data.fixed_state = {}
+        return best_allocation
+    
+    def run_ga_v2(
+        self,
+        all_tasks:list[dict[str, int]],
+        num_runs: int = 100,
+        # num_runs_in_node: int = 5,  # 减少节点内迭代次数
+        num_generations_all: int = 50,  # 增加全局种群大小
+        # num_generations_node: int = 20,  # 减少节点内种群大小
+        pool = None,
+    )->list:
+        start_time = time.time()
+        task_nums = self.at.get_task_nums(all_tasks)
+        self.write_log(f"\nStarting GA with {task_nums} tasks, tasks list: {all_tasks}")
+        self.write_log(f"Running tasks: {self.sch_data.running_task_node}")
+        self.write_log(f"Available resources: {self.node_resources}")
+        
+        # 检测无历史任务
+        ind = self.detect_no_his_task(all_tasks)
+        if ind is not None and len(ind.task_array) > 0:
+            return ind.task_array
+
+        # 生成初始全局种群
+        self.population = self.generate_population_all(all_tasks=all_tasks, population_size=num_generations_all)
+        
+        # 预估任务运行时间
+        self.sch_data.Task_time_predictor.estimate_ga_population(
+            self.population, self.sch_data.sch_task_list, all_node=True
+        )
+        
+        # 计算初始适应度并排序
+        scores = [self.fitness(ind) for ind in self.population]
+        self.population = [self.population[i] for i in np.argsort(scores)[::-1]]
+        
+        score = self.population[0].score
+        logger.info(f"Initial score: {score}")
+        new_score = 0
+        
+        # 全局GA主循环
+        for global_gen in range(num_runs):
+            self.write_log(f"\nGlobal Generation {global_gen + 1}")
+            
+            # 全局种群变异与交叉
+            offspring = []
+            
+            # 精英保留, 后续合并了父代和子代，已经保留
+            # elite_size = max(1, len(self.population) // 5)
+            # offspring.extend([ind.copy() for ind in self.population[:elite_size]])
+            
+            # 基本操作次数
+            n_operations = len(self.population) * 2
+            
+            # 交叉
+            for _ in range(n_operations):
+                if len(self.population) > 1:
+                    i, j = random.sample(range(len(self.population)), 2)
+                    ind1, ind2 = self.population[i], self.population[j]
+                    
+                    if random.random() < 0.3:  # 交叉概率
+                        if random.random() < 0.5:
+                            self.crossover_pmx(offspring, ind1, ind2)
+                        else:
+                            self.crossover_arith_ave(offspring, ind1, ind2)
+            
+            # 变异
+            for _ in range(n_operations):
+                ind = random.choice(self.population)
+                
+                # 顺序变异
+                if random.random() < 0.3:
+                    self.mutate_seq(offspring, ind)
+                
+                # 资源变异
+                if random.random() < 0.3:
+                    self.mutate_resources(offspring, ind)
+                
+                # 节点迁移变异
+                # if random.random() < 0.3:
+                #     self.node_migration_mutation(offspring, ind)
+            
+            # 优化操作
+            for _ in range(n_operations):
+                ind = random.choice(self.population)
+                
+                # 各种优化器
+                if random.random() < 0.7:
+                    self.opt1(offspring, ind)
+                
+                if random.random() < 0.7:
+                    self.opt2(offspring, ind)
+                
+                if random.random() < 0.7:
+                    self.opt_gpu(offspring, ind)
+            
+            # 全局负载均衡
+            # for i in range(min(elite_size, len(self.population))):
+            for i in range(len(offspring)):
+                if random.random() < 0.5:
+                    balanced_ind = offspring[i].copy()
+                    self.load_balance(balanced_ind)
+                    offspring.append(balanced_ind)
+            
+            # 限制子代大小
+            # if len(offspring) > num_generations_all * 3:
+            #     offspring = random.sample(offspring, num_generations_all * 3)
+            
+            # 评估子代适应度
+            self.sch_data.Task_time_predictor.estimate_ga_population(
+                offspring, self.sch_data.sch_task_list, all_node=True
+            )
+            
+            offspring_scores = [self.fitness(ind) for ind in offspring]
+            
+            # 合并父代和子代，选择最佳个体
+            combined = self.population + offspring
+            combined_scores = scores + offspring_scores
+            
+            # 选择前N个最佳个体
+            sorted_indices = np.argsort(combined_scores)[::-1]
+            self.population = [combined[i] for i in sorted_indices[:num_generations_all]]
+            scores = [combined_scores[i] for i in sorted_indices[:num_generations_all]]
+            
+            new_score = scores[0]
+            self.write_log(f"Global optimization: New best score = {new_score}")
+        
+        # 选择最佳个体
+        best_ind = max(self.population, key=lambda ind: ind.score)
+        self.sch_data.best_ind = best_ind
+        best_allocation = best_ind.task_array
+        
+        self.write_log("\nFinal Results:")
+        self.write_log(f"Best individual score: {best_ind.score}")
+        self.write_log(f"Best allocation: {best_allocation}")
+        self.write_log(f"GA running time: {time.time() - start_time:.2f} seconds")
+        
+        logger.info("GA running time: %s seconds" % (time.time() - start_time))
+        
         return best_allocation
