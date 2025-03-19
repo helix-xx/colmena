@@ -346,6 +346,10 @@ class SmartScheduler:
     #         return 1, info
         
     def acquire_resources(smart_scheduler, key):
+        # 配置参数
+        UTIL_LOW_THRESHOLD = 0.9  # 资源利用率低水位阈值
+        TIME_LIMIT = 0.2          # 允许完成时间最大增幅
+        
         # topic与method不一样，暂时添加一个映射
         topic_method_mapping = {
             'simulate': 'run_calculator',
@@ -358,88 +362,123 @@ class SmartScheduler:
         
         pilot_task = smart_scheduler.sch_data.pilot_task.get(method, None)
         info = {}
+        
+        base_ind = smart_scheduler.best_result
         if not pilot_task:
             info['reason'] = "no pilot task"
             return 0, info
-        else:
-            # 获取前后分配的情况，并通过预测器的时间计算资源利用率
-            ind = smart_scheduler.best_result
-            if not ind:
-                info['reason'] = 'no previous info'
-                return 0, info
-            total_cpu_time_per_node, total_gpu_time_per_node, completion_time, total_runtime = smart_scheduler.evo_sch.calc_utilization(ind)
-            
-            # run_sch again
-            # all_tasks = self.sch_data.avail_task.get_all()
-            # all_tasks = copy.deepcopy(all_tasks)
-            # pilot_task = copy.deepcopy(pilot_task)
-            # self.sch_data.renew_task_uuid(pilot_task)
-            
-            # all_tasks = self.sch_data.avail_task.dummy_add_task_id(method, pilot_task['task_id'], all_tasks=all_tasks)
-            # self.sch_data.add_sch_task(pilot_task)
-            # _ = self.run_sch()
-            # new_ind = self.sch_data.best_ind
-            # new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time = self.evo_sch.calc_utilization(new_ind)
-            # self.sch_data.pop_sch_task(pilot_task)
-            
-            # direct get data
-            pilot_task = copy.deepcopy(pilot_task)
-            smart_scheduler.sch_data.renew_task_uuid(pilot_task)
-            new_ind = individual(tasks_nums=ind.tasks_nums+1, total_resources=ind.total_resources)
-            new_ind.task_array[:-1] = ind.task_array
-            
-            cpu = pilot_task['resources.cpu']
-            gpu = pilot_task['resources.gpu']
-            msg_size = pilot_task['message_sizes.inputs']
-            method = pilot_task['method']
-            task_id = pilot_task['task_id']
-            
-            new_ind.task_array[-1] = (
-                method,
-                task_id,
-                cpu,
-                gpu,
-                "node",
-                0,
-                0,
-                0,
-            )
-        
-            for node, resources in ind.total_resources.items():
-                if resources['cpu'] >= cpu and resources['gpu'] >= gpu:
-                    new_ind.task_array[-1]['node'] = node
-                    # TODO how to choose best resources
-                    # new_ind.task_array[-1]['cpu'] = resources['cpu']
-                    # new_ind.task_array[-1]['gpu'] = resources['gpu']
-                    new_ind.task_array[-1]['total_runtime'] = smart_scheduler.sch_data.Task_time_predictor.get_runtime(cpu, gpu, msg_size, method)
-                    new_ind.update_task_id_index()
-                    new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time, new_total_runtime = smart_scheduler.evo_sch.calc_utilization(new_ind)
-                #     print(
-                #         f"Node: {node}, "
-                #         f"New CPU Time: {new_total_cpu_time_per_node[node]}, "
-                #         f"Total CPU Time: {total_cpu_time_per_node[node]}"
-                #     )
-                #     print(
-                #         f"Node: {node}, "
-                #         f"New GPU Time: {new_total_gpu_time_per_node[node]}, "
-                #         f"Total GPU Time: {total_gpu_time_per_node[node]}"
-                #     )
-                #     print(
-                #         f"Node: {node}, "
-                #         f"New Completion Time: {new_completion_time[node]}, "
-                #         f"Completion Time: {completion_time[node]}"
-                #     )
-                #     print(
-                #         f"Node: {node}, "
-                #         f"New Runtime: {new_total_runtime[node]}, "
-                #         f"Total Runtime: {total_runtime[node]}"
-                #     )
-                # print(new_ind.task_array)
-                    if new_completion_time[node] <= completion_time[node]:
-                        return 1, info
 
-            
+        # 获取前后分配的情况，并通过预测器的时间计算资源利用率
+        if not base_ind:
+            info['reason'] = 'no previous info'
             return 0, info
+        base_cpu_area, base_gpu_area, base_completion, _ = smart_scheduler.evo_sch.calc_utilization(base_ind)
+        base_max_time = max(base_completion.values()) if base_completion else 0
+        
+        # run_sch again
+        # all_tasks = self.sch_data.avail_task.get_all()
+        # all_tasks = copy.deepcopy(all_tasks)
+        # pilot_task = copy.deepcopy(pilot_task)
+        # self.sch_data.renew_task_uuid(pilot_task)
+        
+        # all_tasks = self.sch_data.avail_task.dummy_add_task_id(method, pilot_task['task_id'], all_tasks=all_tasks)
+        # self.sch_data.add_sch_task(pilot_task)
+        # _ = self.run_sch()
+        # new_ind = self.sch_data.best_ind
+        # new_total_cpu_time_per_node, new_total_gpu_time_per_node, new_completion_time = self.evo_sch.calc_utilization(new_ind)
+        # self.sch_data.pop_sch_task(pilot_task)
+        
+        # direct get data
+        new_task = copy.deepcopy(pilot_task)
+        smart_scheduler.sch_data.renew_task_uuid(new_task)
+        new_ind = individual(tasks_nums=base_ind.tasks_nums+1, total_resources=base_ind.total_resources)
+        new_ind.task_array[:-1] = base_ind.task_array
+        
+        cpu = new_task['resources.cpu']
+        gpu = new_task['resources.gpu']
+        msg_size = new_task['message_sizes.inputs']
+        method = new_task['method']
+        task_id = new_task['task_id']
+        
+        new_ind.task_array[-1] = (
+            method,
+            task_id,
+            cpu,
+            gpu,
+            "node",
+            0,
+            0,
+            0,
+        )
+    
+        for node, resources in base_ind.total_resources.items():
+            if resources['cpu'] < cpu and resources['gpu'] < gpu:
+                continue
+            new_ind.task_array[-1]['node'] = node
+            # TODO how to choose best resources
+            # new_ind.task_array[-1]['cpu'] = resources['cpu']
+            # new_ind.task_array[-1]['gpu'] = resources['gpu']
+            new_ind.task_array[-1]['total_runtime'] = smart_scheduler.sch_data.Task_time_predictor.get_runtime(cpu, gpu, msg_size, method)
+            new_ind.update_task_id_index()
+            
+            # TODO 此处可优化，仅需计算节点上的任务更改
+            new_cpu_area, new_gpu_area, new_completion, _ = smart_scheduler.evo_sch.calc_utilization(new_ind)
+            new_max_time = max(new_completion.values()) if new_completion else 0
+        #     print(
+        #         f"Node: {node}, "
+        #         f"New CPU Time: {new_total_cpu_time_per_node[node]}, "
+        #         f"Total CPU Time: {total_cpu_time_per_node[node]}"
+        #     )
+        #     print(
+        #         f"Node: {node}, "
+        #         f"New GPU Time: {new_total_gpu_time_per_node[node]}, "
+        #         f"Total GPU Time: {total_gpu_time_per_node[node]}"
+        #     )
+        #     print(
+        #         f"Node: {node}, "
+        #         f"New Completion Time: {new_completion_time[node]}, "
+        #         f"Completion Time: {completion_time[node]}"
+        #     )
+        #     print(
+        #         f"Node: {node}, "
+        #         f"New Runtime: {new_total_runtime[node]}, "
+        #         f"Total Runtime: {total_runtime[node]}"
+        #     )
+        # print(new_ind.task_array)
+            # 如果新任务不会延长completion time
+            if new_max_time <= base_max_time:
+                return 1, info
+            # 如果新任务可以解决资源失配
+            # 计算节点原始利用率
+            base_node_time = base_completion.get(node, 0)
+            base_cpu_util = (base_cpu_area[node] / (base_max_time * resources['cpu'])) if base_max_time > 0 else 0
+            base_gpu_util = (base_gpu_area[node] / (base_max_time * resources['cpu'])) if base_max_time > 0 else 0
+            
+            # 计算新利用率
+            new_cpu_util = (new_cpu_area[node] / (new_max_time * resources['cpu'])) if new_max_time > 0 else 0
+            new_gpu_util = (new_gpu_area[node] / (new_max_time * resources['gpu'])) if new_max_time > 0 else 0
+            
+            # 时间的延长
+            time_increase_ratio = (new_max_time - base_max_time) / base_max_time if base_max_time > 0 else 0
+            
+            util_improve = new_cpu_util > base_cpu_util and new_gpu_util > base_gpu_util
+            # 资源类型独立判断
+            cpu_improved = base_cpu_util < UTIL_LOW_THRESHOLD and new_cpu_util > base_cpu_util
+            gpu_improved = base_gpu_util < UTIL_LOW_THRESHOLD and new_gpu_util > base_gpu_util
+            
+            # 满足任一资源类型改进且时间可控
+            if util_improve and (cpu_improved or gpu_improved) and time_increase_ratio <= TIME_LIMIT:
+                improvements = []
+                if cpu_improved:
+                    improvements.append(f"CPU+{(new_cpu_util - base_cpu_util):.1%}")
+                if gpu_improved:
+                    improvements.append(f"GPU+{(new_gpu_util - base_gpu_util):.1%}")
+                return 1, {
+                    'reason': f'util improved ({", ".join(improvements)}) at {node}',
+                    'node': node
+                }
+        
+        return 0, {'reason': 'no suitable condition met'}
         
     def check_runtime_resources(self):
         # 在进行完调度后计算资源失配情况
@@ -494,7 +533,7 @@ class SmartScheduler:
                     self.resource_feedback_events[method].clear()
                     self.resource_feedback_info[method] = info
                     self.resource_feedback_info[method]['permit'] = 0
-                    logger.info(f"Clearing resource event for {task_type} - no additional tasks should be submitted")
+                    logger.info(f"Clearing resource event for {task_type} - no additional tasks should be submitte, info{info}")
             except Exception as e:
                 logger.error(f"Error evaluating resources for {task_type}: {e}")
             

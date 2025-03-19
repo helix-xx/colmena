@@ -1981,7 +1981,7 @@ class evosch2:
                 ind = random.choice(self.population)
                 
                 # 顺序变异
-                if random.random() < 0.3:
+                if random.random() < 0.3 and len(ind.task_array)>=2:
                     self.mutate_seq(offspring, ind)
                 
                 # 资源变异
