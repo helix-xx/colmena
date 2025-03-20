@@ -22,6 +22,7 @@ import psutil
 # Local application imports
 from colmena.models import Result
 from .monitor import available_task, HistoricalData, Sch_data
+from .scheduler_util import task_dtype, distribute_tasks
 
 # Configure logging
 import logging
@@ -1363,6 +1364,67 @@ class evosch2:
         population.append(ind)
 
         return population
+    
+    def generate_balanced_population(self, all_tasks, population_size: int):
+        """使用MRSA的负载均衡策略生成初始化种群"""
+        def create_individual_from_distribution(distributed_tasks):
+            """从分布结果创建individual对象"""
+            ind = individual(
+                tasks_nums=len(distributed_tasks),
+                total_resources=self.node_resources
+            )
+            
+            # 转换任务格式并填充运行时
+            task_list = []
+            for task in distributed_tasks:
+                # 获取任务元数据
+                task_id = task['task_id']
+                task_name = task['name']
+                
+                task_list.append((
+                    task_name, task_id,
+                    task['cpu'], task['gpu'],
+                    task['node'], 0.0,
+                    0.0, 0.0  # start_time和finish_time初始化为0
+                ))
+            
+            # 填充到numpy结构化数组
+            ind.task_array = np.array(
+                task_list,
+                dtype=ind.dtype
+            )
+            ind.update_task_id_index()
+            return ind
+
+        population = []
+        
+        # 使用改进的distribute_tasks进行任务分配
+        distributed_tasks = distribute_tasks(
+            tasks=all_tasks,
+            nodes=self.node_resources,
+            sch_task_lists=self.sch_data.sch_task_list,
+            Task_time_predictor=self.sch_data.Task_time_predictor
+        )
+        balanced_ind = create_individual_from_distribution(distributed_tasks)
+        population.append(balanced_ind)
+        # 生成基于负载均衡的个体
+        for _ in range(population_size//2):
+            
+            # 创建个体并添加到种群
+            ind = balanced_ind.copy()
+            ind.task_array_shuffled()  # shuffle task array
+            ind.update_task_id_index()
+            ind.init_node_array()
+            population.append(ind)
+        
+        # 添加随机个体保持多样性
+        population += self.generate_population_all(all_tasks, max(population_size//2, 2))
+        
+        # 添加历史最优个体
+        if self.sch_data.best_ind is not None:
+            population.append(self.sch_data.best_ind.copy())
+        
+        return population
 
     def generate_population_in_node(self, ind: individual, pop_size: int = 10):
         """为每个节点生成子种群"""
@@ -1939,7 +2001,7 @@ class evosch2:
             return ind.task_array
 
         # 生成初始全局种群
-        self.population = self.generate_population_all(all_tasks=all_tasks, population_size=num_generations_all)
+        self.population = self.generate_balanced_population(all_tasks=all_tasks, population_size=num_generations_all)
         
         # 预估任务运行时间
         self.sch_data.Task_time_predictor.estimate_ga_population(
@@ -1986,7 +2048,14 @@ class evosch2:
                 
                 # 顺序变异
                 if random.random() < 0.3 and len(ind.task_array)>=2:
-                    self.mutate_seq(offspring, ind)
+                    if random.random() < 0.5:
+                        self.mutate_seq(offspring, ind)
+                    else:
+                        shuffled_ind = ind.copy()
+                        shuffled_ind.task_array_shuffled()  # shuffle task array
+                        shuffled_ind.update_task_id_index()
+                        shuffled_ind.init_node_array()
+                        offspring.append(shuffled_ind)
                 
                 # 资源变异
                 if random.random() < 0.3:
