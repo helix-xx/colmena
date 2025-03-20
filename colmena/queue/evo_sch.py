@@ -1221,6 +1221,7 @@ class evosch2:
         resource_areas = np.zeros(len(unique_nodes))
         total_runtimes = np.zeros(len(unique_nodes))
         
+        resources_area_weight = 0
         for i, node in enumerate(unique_nodes):
             node_mask = ind.task_array['node'] == node
             node_tasks = ind.task_array[node_mask]
@@ -1240,6 +1241,9 @@ class evosch2:
             completion_times[i] = completion_time
             resource_areas[i] = resource_area
             total_runtimes[i] = total_runtime
+            
+            node_total_resources = sum(self.node_resources[node].values())
+            resources_area_weight += (resource_area / node_total_resources)
         
         # 存储调度指标
         ind.completion_time = np.max(completion_times)
@@ -1247,7 +1251,7 @@ class evosch2:
         ind.total_runtime = np.max(total_runtimes) # last task finish time
         
         # 计算适应度分数
-        ind.score = -ind.completion_time
+        ind.score = -ind.completion_time - resources_area_weight
         return ind.score
 
     def generate_node(self):
