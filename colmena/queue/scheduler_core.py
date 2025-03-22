@@ -204,7 +204,7 @@ class SmartScheduler:
         #     os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/simulation-results-more_core.json')
         # )
         hist_path.append(
-            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/training-results.json')
+            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/training-results_v100.json')
         )
         self.sch_data.historical_task_data.get_features_from_his_json(hist_path)
         self.sch_data.Task_time_predictor.train(self.sch_data.historical_task_data.historical_data)

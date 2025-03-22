@@ -1264,7 +1264,7 @@ class evosch2:
 
         total_runtime = np.max(ends)
 
-        return completion_time, resource_area, total_runtime
+        return completion_time, resources_released_weighted, total_runtime
 
     def calculate_total_time(self, ind: individual):
         total_time = 0

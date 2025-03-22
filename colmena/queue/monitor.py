@@ -65,6 +65,9 @@ class Sch_data(SingletonClass):
         # logger.info('add task to scheduler {}'.format(result.task_id))
         self.result_list[result.task_id] = result
         sch_task = self.historical_task_data.get_sch_task_from_result_object(result)
+        self.avail_task.add_task_id(
+                    task_name=result.method, task_id=result.task_id
+                )
         logger.info(f"add sch_task: {sch_task}")
         self.sch_task_list[sch_task['task_id']] = sch_task
 

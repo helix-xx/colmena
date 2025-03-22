@@ -370,9 +370,10 @@ class ColmenaQueues:
         if self.enable_smart_sch:
             # add to available task list, under this lock agent cant submit task
             with self._add_task_lock:
-                self.smart_sch.sch_data.avail_task.add_task_id(
-                    task_name=method, task_id=result.task_id
-                )
+                # self.smart_sch.sch_data.avail_task.add_task_id(
+                #     task_name=method, task_id=result.task_id
+                # )
+                self.smart_sch.sch_data.add_result_obj(result)
                 # self.smart_sch.evosch.hist_data.submit_task_seq.append(
                 #     {
                 #         "method": method,
@@ -384,7 +385,6 @@ class ColmenaQueues:
                 # )
                 logger.info(f'Client sent a {method} task with topic {topic}.')
                 # self.result_list[result.task_id] = result
-                self.smart_sch.sch_data.add_result_obj(result)
                 # detect the capacity
                 # if self._available_tasks.get_total_nums() >= self._available_task_capacity:
                 #     logger.info(f'Client reach the capacity.')
@@ -484,7 +484,7 @@ class ColmenaQueues:
                         node_blocked[node] = True  # 标记这个节点为阻塞状态
                     else:
                         logger.info(
-                            f"submit task {task['task_id']} to queue on node {node}, remaining resources are {self.smart_sch.evo_sch.resources[node]}, consume resources are {cpu_value} and {gpu_value}"
+                            f"submit task {task['task_id']} to queue on node {node}, remaining resources are {self.smart_sch.evo_sch.resources[node]}, consume resources are {cpu_value} and {gpu_value}, all remaining resources are {self.smart_sch.evo_sch.resources}"
                         )
                         self.smart_sch.evo_sch.resources[node]['cpu'] -= cpu_value
                         self.smart_sch.evo_sch.resources[node]['gpu'] -= gpu_value
