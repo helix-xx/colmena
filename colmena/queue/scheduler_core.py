@@ -200,6 +200,9 @@ class SmartScheduler:
         hist_path.append(
             os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/simulation-results.json')
         )
+        # hist_path.append(
+        #     os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/simulation-results-more_core.json')
+        # )
         hist_path.append(
             os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/training-results.json')
         )
