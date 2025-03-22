@@ -1413,16 +1413,11 @@ class evosch2:
             # 创建个体并添加到种群
             ind = balanced_ind.copy()
             ind.task_array_shuffled()  # shuffle task array
-            ind.update_task_id_index()
             ind.init_node_array()
             population.append(ind)
         
         # 添加随机个体保持多样性
         population += self.generate_population_all(all_tasks, max(population_size//2, 2))
-        
-        # 添加历史最优个体
-        if self.sch_data.best_ind is not None:
-            population.append(self.sch_data.best_ind.copy())
         
         return population
 
@@ -2053,7 +2048,6 @@ class evosch2:
                     else:
                         shuffled_ind = ind.copy()
                         shuffled_ind.task_array_shuffled()  # shuffle task array
-                        shuffled_ind.update_task_id_index()
                         shuffled_ind.init_node_array()
                         offspring.append(shuffled_ind)
                 

@@ -447,36 +447,36 @@ class SmartScheduler:
         # print(new_ind.task_array)
             # 如果新任务不会延长completion time
             if new_max_time <= base_max_time:
-                return 1, info
-            # 如果新任务可以解决资源失配
+                return 1, info 
+            # 如果新任务可以解决资源失配 #TODO 且不能无限制提交任务
             # 计算节点原始利用率
-            base_node_time = base_completion.get(node, 0)
-            base_cpu_util = (base_cpu_area[node] / (base_max_time * resources['cpu'])) if base_max_time > 0 else 0
-            base_gpu_util = (base_gpu_area[node] / (base_max_time * resources['cpu'])) if base_max_time > 0 else 0
+            # base_node_time = base_completion.get(node, 0)
+            # base_cpu_util = (base_cpu_area[node] / (base_max_time * resources['cpu'])) if base_max_time > 0 else 0
+            # base_gpu_util = (base_gpu_area[node] / (base_max_time * resources['cpu'])) if base_max_time > 0 else 0
             
-            # 计算新利用率
-            new_cpu_util = (new_cpu_area[node] / (new_max_time * resources['cpu'])) if new_max_time > 0 else 0
-            new_gpu_util = (new_gpu_area[node] / (new_max_time * resources['gpu'])) if new_max_time > 0 else 0
+            # # 计算新利用率
+            # new_cpu_util = (new_cpu_area[node] / (new_max_time * resources['cpu'])) if new_max_time > 0 else 0
+            # new_gpu_util = (new_gpu_area[node] / (new_max_time * resources['gpu'])) if new_max_time > 0 else 0
             
-            # 时间的延长
-            time_increase_ratio = (new_max_time - base_max_time) / base_max_time if base_max_time > 0 else 0
+            # # 时间的延长
+            # time_increase_ratio = (new_max_time - base_max_time) / base_max_time if base_max_time > 0 else 0
             
-            util_improve = new_cpu_util > base_cpu_util and new_gpu_util > base_gpu_util
-            # 资源类型独立判断
-            cpu_improved = base_cpu_util < UTIL_LOW_THRESHOLD and new_cpu_util > base_cpu_util
-            gpu_improved = base_gpu_util < UTIL_LOW_THRESHOLD and new_gpu_util > base_gpu_util
+            # util_improve = new_cpu_util > base_cpu_util and new_gpu_util > base_gpu_util
+            # # 资源类型独立判断
+            # cpu_improved = base_cpu_util < UTIL_LOW_THRESHOLD and new_cpu_util > base_cpu_util
+            # gpu_improved = base_gpu_util < UTIL_LOW_THRESHOLD and new_gpu_util > base_gpu_util
             
-            # 满足任一资源类型改进且时间可控
-            if util_improve and (cpu_improved or gpu_improved) and time_increase_ratio <= TIME_LIMIT:
-                improvements = []
-                if cpu_improved:
-                    improvements.append(f"CPU+{(new_cpu_util - base_cpu_util):.1%}")
-                if gpu_improved:
-                    improvements.append(f"GPU+{(new_gpu_util - base_gpu_util):.1%}")
-                return 1, {
-                    'reason': f'util improved ({", ".join(improvements)}) at {node}',
-                    'node': node
-                }
+            # # 满足任一资源类型改进且时间可控
+            # if util_improve and (cpu_improved or gpu_improved) and time_increase_ratio <= TIME_LIMIT:
+            #     improvements = []
+            #     if cpu_improved:
+            #         improvements.append(f"CPU+{(new_cpu_util - base_cpu_util):.1%}")
+            #     if gpu_improved:
+            #         improvements.append(f"GPU+{(new_gpu_util - base_gpu_util):.1%}")
+            #     return 1, {
+            #         'reason': f'util improved ({", ".join(improvements)}) at {node}',
+            #         'node': node
+            #     }
         
         return 0, {'reason': 'no suitable condition met'}
         
