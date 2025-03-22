@@ -415,7 +415,7 @@ class SmartScheduler:
         )
     
         for node, resources in base_ind.total_resources.items():
-            if resources['cpu'] < cpu and resources['gpu'] < gpu:
+            if resources['cpu'] < cpu or resources['gpu'] < gpu:
                 continue
             new_ind.task_array[-1]['node'] = node
             # TODO how to choose best resources
