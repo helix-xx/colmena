@@ -1132,6 +1132,72 @@ class evosch2:
                 break
             
         ind.init_node_array()
+        
+    def distributed_individual_tasks(self, 
+                            population: list[individual],
+                            ind: individual
+                            ):
+        """
+        基于资源面积的负载均衡优化（与原distribute_tasks一致）
+        """
+        balanced_ind = ind.copy()
+        node_loads = defaultdict(lambda: {'cpu_area':0.0, 'gpu_area':0.0})
+        
+        # 初始化负载计算
+        for task in balanced_ind.task_array:
+            node = task['node']
+            runtime = self.sch_data.Task_time_predictor.get_runtime(
+                task['cpu'], task['gpu'], 
+                self.sch_data.sch_task_list[task['task_id']]['message_sizes.inputs'],
+                task['name']
+            )
+            node_loads[node]['cpu_area'] += task['cpu'] * runtime
+            node_loads[node]['gpu_area'] += task['gpu'] * runtime
+
+        # 排序策略与原函数一致
+        sorted_tasks = sorted(
+            balanced_ind.task_array,
+            key=lambda t: (t['gpu']*t['total_runtime'], t['cpu']*t['total_runtime']),
+            reverse=True
+        )
+
+        # 重分配主逻辑
+        for task in sorted_tasks:
+            current_node = task['node']
+            candidate_nodes = [
+                node for node, res in self.node_resources.items()
+                if res['cpu'] >= task['cpu'] and res['gpu'] >= task['gpu']
+            ]
+            
+            if not candidate_nodes:
+                continue
+                
+            # 选择最小化最大利用率的节点
+            best_node = min(
+                candidate_nodes,
+                key=lambda n: max(
+                    (node_loads[n]['cpu_area'] + task['cpu']*task['total_runtime']) / self.node_resources[n]['cpu'],
+                    (node_loads[n]['gpu_area'] + task['gpu']*task['total_runtime']) / self.node_resources[n]['gpu'] if self.node_resources[n]['gpu']>0 else 0
+                )
+            )
+            
+            if best_node != current_node:
+                # 更新负载记录
+                runtime = task['total_runtime']
+                node_loads[current_node]['cpu_area'] -= task['cpu'] * runtime
+                node_loads[current_node]['gpu_area'] -= task['gpu'] * runtime
+                node_loads[best_node]['cpu_area'] += task['cpu'] * runtime
+                node_loads[best_node]['gpu_area'] += task['gpu'] * runtime
+                
+                # 更新任务分配
+                task_idx = balanced_ind.get_task_index(task['task_id'])
+                balanced_ind.task_array[task_idx]['node'] = best_node
+
+        # 保持个体结构完整性
+        balanced_ind.update_task_id_index()
+        balanced_ind.init_node_array()
+        
+        population.append(balanced_ind)
 
 
 # 修改 calculate_completion_time_record_with_running_task 使用缓存函数
@@ -1252,7 +1318,8 @@ class evosch2:
         ind.total_runtime = np.max(total_runtimes) # last task finish time
         
         # 计算适应度分数
-        ind.score = -ind.completion_time - resources_area_weight
+        ind.score = -ind.completion_time - 0.1*resources_area_weight
+        # ind.score = -ind.completion_time
         return ind.score
 
     def generate_node(self):
@@ -2075,11 +2142,15 @@ class evosch2:
             
             # 全局负载均衡
             # for i in range(min(elite_size, len(self.population))):
-            for i in range(len(offspring)):
-                if random.random() < 0.5:
+            # for i in range(len(offspring)):
+            n = len(offspring)
+            for i in range(n):
+                if random.random() < 0.2:
                     balanced_ind = offspring[i].copy()
                     self.load_balance(balanced_ind)
                     offspring.append(balanced_ind)
+                    
+                    self.distributed_individual_tasks(offspring, offspring[i])
             
             # 限制子代大小
             # if len(offspring) > num_generations_all * 3:
