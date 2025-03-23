@@ -600,7 +600,7 @@ def _calculate_completion_time_with_state(
         
     # 计算空闲资源面积
     resources_released_weighted = 0
-    # resources_released_weighted += (avail_cpu + avail_gpu) * current_time
+    resources_released_weighted += (avail_cpu + avail_gpu) * current_time
     while task_count > 0:
         current_time = new_ongoing_times[0]
         avail_cpu += new_ongoing_cpus[0]
@@ -1232,7 +1232,7 @@ class evosch2:
                 task_cpu_tuple,
                 task_gpu_tuple,
                 task_runtime_tuple,
-                self.sch_data.fixed_state[node][0],  # current_time
+                self.sch_data.fixed_state[node][0]%10000,  # current_time
                 self.sch_data.fixed_state[node][1],  # avail_cpu
                 self.sch_data.fixed_state[node][2],  # avail_gpu
                 self.sch_data.fixed_state[node][3],  # task_count
