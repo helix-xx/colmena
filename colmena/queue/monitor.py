@@ -194,7 +194,7 @@ class available_task(SingletonClass):
         elif task_type == 'scheduled':
             return copy.deepcopy(self.scheduled_task)
         
-    def get_schedulable_tasks(self, time_split: float) -> tuple[dict, np.ndarray]:
+    def get_schedulable_tasks(self, time_split: float, current_time = time.time()) -> tuple[dict, np.ndarray]:
         """获取可以进行调度的任务
         
         Args:
@@ -203,7 +203,7 @@ class available_task(SingletonClass):
         Returns:
             tuple: (待调度的available任务dict, 需要重新调度的已调度任务array)
         """
-        current_time = time.time()
+        
         with self.move_lock:
             
             # 从已调度任务中找出需要重新调度的任务

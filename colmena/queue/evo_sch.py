@@ -439,6 +439,9 @@ def _precalculate_fixed_tasks_state(
         ongoing_cpus[insert_pos] = running_cpus[i]
         ongoing_gpus[insert_pos] = running_gpus[i]
         task_count += 1
+        
+        avail_cpu -= running_cpus[i]
+        avail_gpu -= running_gpus[i]
     
     # 处理queued任务
     queued_starts = np.zeros(n_queued, dtype=np.float64)
@@ -597,12 +600,12 @@ def _calculate_completion_time_with_state(
         
     # 计算空闲资源面积
     resources_released_weighted = 0
-    resources_released_weighted += (avail_cpu + avail_gpu) * current_time
+    # resources_released_weighted += (avail_cpu + avail_gpu) * current_time
     while task_count > 0:
         current_time = new_ongoing_times[0]
         avail_cpu += new_ongoing_cpus[0]
         avail_gpu += new_ongoing_gpus[0]
-        resources_released_weighted += (avail_cpu + avail_gpu) * current_time
+        resources_released_weighted += (new_ongoing_cpus[0] + new_ongoing_gpus[0]) * current_time
         
         # 移除完成的任务
         for j in range(task_count - 1):
@@ -653,7 +656,7 @@ def cached_calculate_task_resource_area(
     # 调用原始 numba 函数
     return _calculate_task_resource_area(task_runtime, task_cpu, task_gpu)
 
-def precalculate_fixed_state(sch_data:Sch_data, running_tasks_all, queued_tasks_all):
+def precalculate_fixed_state(sch_data:Sch_data, running_tasks_all, queued_tasks_all, scheduler_time=time.time()):
     """预计算固定任务状态"""
     sch_data.fixed_state = {}
     for node in sch_data.available_resources.keys():
@@ -690,7 +693,7 @@ def precalculate_fixed_state(sch_data:Sch_data, running_tasks_all, queued_tasks_
             running_gpus,
             sch_data.available_resources[node]['cpu'],
             sch_data.available_resources[node]['gpu'],
-            time.time()
+            scheduler_time
         )
         
     if sch_data.fixed_state is None:
@@ -1292,12 +1295,12 @@ class evosch2:
         for i, node in enumerate(unique_nodes):
             node_mask = ind.task_array['node'] == node
             node_tasks = ind.task_array[node_mask]
-            # # 添加空任务检查
-            # if len(node_tasks) == 0:
-            #     completion_times[i] = 0
-            #     resource_areas[i] = 0
-            #     total_runtimes[i] = 0
-            #     continue
+            # 添加空任务检查
+            if len(node_tasks) == 0:
+                completion_times[i] = 0
+                resource_areas[i] = 0
+                total_runtimes[i] = 0
+                continue
             
             completion_time, resource_area, total_runtime = self.calculate_completion_time_record_with_running_task(
                 self.node_resources[node],
@@ -1313,12 +1316,12 @@ class evosch2:
             resources_area_weight += (resource_area / node_total_resources)
         
         # 存储调度指标
-        ind.completion_time = np.max(completion_times)
-        ind.resource_area = np.sum(resource_areas)
-        ind.total_runtime = np.max(total_runtimes) # last task finish time
+        ind.completion_time = completion_times
+        ind.resource_area = resource_areas
+        ind.total_runtime = total_runtimes # last task finish time
         
         # 计算适应度分数
-        ind.score = -ind.completion_time - 0.1*resources_area_weight
+        ind.score = -np.max(ind.completion_time) + 0.1*resources_area_weight
         # ind.score = -ind.completion_time
         return ind.score
 
@@ -2076,6 +2079,7 @@ class evosch2:
         
         score = self.population[0].score
         logger.info(f"Initial score: {score}")
+        self.write_log(f"Initial score: {score}")
         new_score = 0
         
         # 全局GA主循环
@@ -2174,6 +2178,7 @@ class evosch2:
             
             new_score = scores[0]
             self.write_log(f"Global optimization: New best score = {new_score}")
+            self.write_log(f"best ind allocations: {self.population[0].task_array}")
         
         # 选择最佳个体
         best_ind = max(self.population, key=lambda ind: ind.score)

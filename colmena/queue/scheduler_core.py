@@ -540,7 +540,7 @@ class SmartScheduler:
             except Exception as e:
                 logger.error(f"Error evaluating resources for {task_type}: {e}")
             
-    def run_sch(self, method = "ga", model_type="powSum"):
+    def run_sch(self, method = "ga", model_type="powSum", scheduler_time=time.time()):
         """运行调度器
 
         Args:
@@ -557,10 +557,10 @@ class SmartScheduler:
         self.sch_data.Task_time_predictor.fill_features_from_new_task(self.available_resources, self.sch_data.sch_task_list)
         self.sch_data.Task_time_predictor.fill_runtime_records_with_predictor()
         logger.info(f"available task:{self.sch_data.avail_task.task_ids}, scheduled task: {self.sch_data.avail_task.scheduled_task}")
-        all_tasks, scheduled_array = self.sch_data.avail_task.get_schedulable_tasks(self.scheduler_timer.scheduling_time)
+        all_tasks, scheduled_array = self.sch_data.avail_task.get_schedulable_tasks(self.scheduler_timer.scheduling_time, scheduler_time)
         self.sch_data.avail_task.move_available_to_scheduled(all_tasks)
         
-        precalculate_fixed_state(self.sch_data, self.sch_data.running_task_node, self.sch_data.avail_task.allocations)
+        precalculate_fixed_state(self.sch_data, self.sch_data.running_task_node, self.sch_data.avail_task.allocations, scheduler_time=scheduler_time)
         if method == "ga":
             best_allocation = self.evo_sch.run_ga_v2(all_tasks, pool = self.pool)
             self.best_result = self.sch_data.best_ind
