@@ -28,7 +28,8 @@ class SingletonClass(metaclass=SingletonMeta):
         pass
 
 
-class Sch_data(SingletonClass):
+# class Sch_data(SingletonClass):
+class Sch_data():
     def __init__(self, methods, available_resources, scheduler_type):
         # 延迟初始化
         self.result_list = {}
@@ -101,7 +102,8 @@ class Sch_data(SingletonClass):
         return len(self.result_list)
     
 @dataclass
-class available_task(SingletonClass):
+# class available_task(SingletonClass):
+class available_task():
     # task_names: list[str] = field(default_factory=list)
     # task_ids: list[dict[str, int]] = field(default_factory=dict)
 

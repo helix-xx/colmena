@@ -49,6 +49,171 @@ def dataclass_to_dict(obj):
     else:
         return obj
 
+import time
+import json
+import numpy as np
+import random
+import copy
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+from collections import defaultdict
+
+class GADataCollector:
+    """跟踪GA运行时的数据收集器"""
+    
+    def __init__(self):
+        self.reset()
+    
+    def reset(self):
+        """重置收集器状态"""
+        self.metrics = {
+            'generations': [],
+            'best_fitness': [],
+            'avg_fitness': [],
+            'population_diversity': [],
+            'time_per_generation': [],
+            'operator_metrics': defaultdict(lambda: {
+                'attempts': 0,
+                'improvements': 0,
+                'improvement_amounts': []
+            }),
+            'best_makespans': [],  # 每代最佳个体的完成时间
+            'population_history': [],  # 每代的种群统计信息
+            'operator_history': []  # 每代的算子使用情况
+        }
+        self.current_best_fitness = float('-inf')
+        self.gen_start_time = None
+    
+    def start_generation(self):
+        """开始新一代的计时"""
+        self.gen_start_time = time.time()
+        self.gen_operator_metrics = defaultdict(lambda: {
+            'attempts': 0,
+            'improvements': 0,
+            'improvement_amounts': []
+        })
+    
+    def end_generation(self, generation, population, scores):
+        """结束当前代的数据收集"""
+        if not self.gen_start_time:
+            return
+            
+        gen_time = time.time() - self.gen_start_time
+        best_idx = np.argmax(scores)
+        best_fitness = scores[best_idx]
+        avg_fitness = np.mean(scores)
+        diversity = self._calculate_diversity(population)
+        
+        # 记录基本指标
+        self.metrics['generations'].append(generation)
+        self.metrics['best_fitness'].append(best_fitness)
+        self.metrics['avg_fitness'].append(avg_fitness)
+        self.metrics['population_diversity'].append(diversity)
+        self.metrics['time_per_generation'].append(gen_time)
+        
+        # 如果有makespan数据，记录它
+        if hasattr(population[best_idx], 'completion_time'):
+            best_makespan = float(np.max(population[best_idx].completion_time))
+            self.metrics['best_makespans'].append(best_makespan)
+        
+        # 记录种群统计
+        self.metrics['population_history'].append({
+            'gen': generation,
+            'best_fitness': best_fitness,
+            'avg_fitness': avg_fitness,
+            'diversity': diversity,
+            'gen_time': gen_time
+        })
+        
+        # 记录该代算子使用情况
+        self.metrics['operator_history'].append({
+            'gen': generation,
+            **{op: metrics['attempts'] for op, metrics in self.gen_operator_metrics.items()}
+        })
+        
+        # 更新当前最佳适应度
+        self.current_best_fitness = max(best_fitness, self.current_best_fitness)
+        
+        # 合并本代算子指标到总指标
+        for op_name, op_metrics in self.gen_operator_metrics.items():
+            self.metrics['operator_metrics'][op_name]['attempts'] += op_metrics['attempts']
+            self.metrics['operator_metrics'][op_name]['improvements'] += op_metrics['improvements']
+            self.metrics['operator_metrics'][op_name]['improvement_amounts'].extend(
+                op_metrics['improvement_amounts']
+            )
+    
+    def track_operator(self, operator_name, result_ind=None):
+        """
+        跟踪算子的应用
+        
+        参数:
+        operator_name: 算子名称
+        result_ind: 算子产生的个体（可选）
+        
+        返回:
+        True表示该算子产生了改进
+        """
+        # 记录算子被使用
+        self.gen_operator_metrics[operator_name]['attempts'] += 1
+        
+        # 如果提供了结果个体，检查是否改进
+        if result_ind is not None and hasattr(result_ind, 'score'):
+            fitness = result_ind.score
+            
+            if fitness > self.current_best_fitness:
+                improvement = fitness - self.current_best_fitness
+                self.gen_operator_metrics[operator_name]['improvements'] += 1
+                self.gen_operator_metrics[operator_name]['improvement_amounts'].append(improvement)
+                self.current_best_fitness = fitness
+                return True
+        
+        return False
+    
+    def _calculate_diversity(self, population):
+        """计算种群多样性"""
+        if not population or len(population) < 2:
+            return 0.0
+        
+        # 对大种群采样以提高效率
+        if len(population) > 20:
+            sample_pop = random.sample(population, 20)
+        else:
+            sample_pop = population
+        
+        # 计算个体间平均差异
+        total_diff = 0.0
+        count = 0
+        
+        for i in range(len(sample_pop)):
+            for j in range(i+1, len(sample_pop)):
+                ind1, ind2 = sample_pop[i], sample_pop[j]
+                
+                # CPU分配差异
+                cpu_diff = np.mean(np.abs(ind1.task_array['cpu'] - ind2.task_array['cpu']))
+                
+                # GPU分配差异
+                gpu_diff = np.mean(np.abs(ind1.task_array['gpu'] - ind2.task_array['gpu']))
+                
+                # 节点分配差异
+                node_diff = np.mean(ind1.task_array['node'] != ind2.task_array['node'])
+                
+                # 综合差异
+                diff = cpu_diff + gpu_diff + node_diff * 10
+                total_diff += diff
+                count += 1
+        
+        return total_diff / max(1, count)
+    
+    def save_to_file(self, filename=None):
+        """将收集的指标保存到文件"""
+        if filename is None:
+            filename = f'ga_metrics_{time.strftime("%Y%m%d_%H%M%S")}.json'
+        
+        with open(filename, 'w') as f:
+            json.dump(self.metrics, f, indent=4, default=lambda x: float(x) if isinstance(x, np.float32) else x)
+        
+        return filename
 @dataclass
 class individual:
     # individual information
@@ -93,7 +258,7 @@ class individual:
         # 添加node_array的数据类型定义
         self.node_dtype = [
             ('node', 'U10'),
-            ('task_indices', 'i4', (100,))  # 假设每个节点最多100个任务
+            ('task_indices', 'i4', (400,))  # 假设每个节点最多100个任务
         ]
         
         # self.init_node_array()
@@ -614,7 +779,7 @@ def _calculate_completion_time_with_state(
             new_ongoing_gpus[j] = new_ongoing_gpus[j + 1]
         task_count -= 1
     
-    resources_released_weighted = current_time * (avail_cpu + avail_gpu) - resources_released_weighted
+    # resources_released_weighted = current_time * (avail_cpu + avail_gpu) - resources_released_weighted
     
     completion_time = current_time - start_time if n_tasks > 0 else 0
     return completion_time, resources_released_weighted, task_starts, task_ends
@@ -2048,9 +2213,9 @@ class evosch2:
     def run_ga_v2(
         self,
         all_tasks:list[dict[str, int]],
-        num_runs: int = 100,
+        num_runs: int = 50,
         # num_runs_in_node: int = 5,  # 减少节点内迭代次数
-        num_generations_all: int = 50,  # 增加全局种群大小
+        num_generations_all: int = 50,  # 增加全局种群大小,精英总群大小
         # num_generations_node: int = 20,  # 减少节点内种群大小
         pool = None,
     )->list:
@@ -2153,8 +2318,9 @@ class evosch2:
                     balanced_ind = offspring[i].copy()
                     self.load_balance(balanced_ind)
                     offspring.append(balanced_ind)
-                    
-                    self.distributed_individual_tasks(offspring, offspring[i])
+                elif random.random() <0.1:
+                    self.distributed_individual_tasks(offspring, offspring[i])    
+                
             
             # 限制子代大小
             # if len(offspring) > num_generations_all * 3:
@@ -2193,3 +2359,203 @@ class evosch2:
         logger.info("GA running time: %s seconds" % (time.time() - start_time))
         
         return best_allocation
+    
+    def run_ga_with_metrics(
+            self,
+            all_tasks,
+            num_runs=50,
+            num_generations_all=50,
+            collector=None,
+            operator_flags=None,
+        ):
+        """使用指标收集器的GA运行函数"""
+        # 初始化数据收集器
+        if collector is None:
+            collector = GADataCollector()
+        
+        # 设置算子标志（控制哪些算子被使用）
+        if operator_flags is None:
+            operator_flags = {
+                'crossover_pmx': True,
+                'crossover_arith_ave': True,
+                'mutate_seq': True,
+                'mutate_resources': True,
+                'opt1': True,
+                'opt2': True,
+                'opt_gpu': True,
+                'load_balance': True,
+                'distributed_tasks': True
+            }
+        
+        start_time = time.time()
+        self.write_log(f"\nStarting GA with {all_tasks} tasks on {self.resources} nodes")
+        self.write_log(f"Active operators: {[op for op, flag in operator_flags.items() if flag]}")
+        
+        # 生成初始种群
+        if operator_flags['distributed_tasks']:
+            self.population = self.generate_balanced_population(all_tasks=all_tasks, population_size=num_generations_all)
+        else:
+            self.population = self.generate_population_all(all_tasks=all_tasks, population_size=num_generations_all)
+        
+        # 评估初始种群
+        self.sch_data.Task_time_predictor.estimate_ga_population(
+            self.population, self.sch_data.sch_task_list, all_node=True
+        )
+        
+        # 计算初始种群的适应度
+        scores = [self.fitness(ind) for ind in self.population]
+        self.population = [self.population[i] for i in np.argsort(scores)[::-1]]
+        
+        # 记录初始代
+        collector.start_generation()
+        collector.end_generation(0, self.population, scores)
+        
+        # GA主循环
+        for global_gen in range(num_runs):
+            collector.start_generation()
+            self.write_log(f"\nGlobal Generation {global_gen + 1}")
+            
+            # 创建后代
+            offspring = []
+            
+            # 精英保留
+            elite_size = max(1, len(self.population) // 5)
+            
+            # 基本操作次数
+            n_operations = len(self.population) * 2
+            
+            # 交叉操作
+            for _ in range(n_operations):
+                if len(self.population) > 1:
+                    i, j = random.sample(range(len(self.population)), 2)
+                    ind1, ind2 = self.population[i], self.population[j]
+                    
+                    if random.random() < 0.3:  # 交叉概率
+                        # PMX交叉
+                        if operator_flags['crossover_pmx'] and random.random() < 0.5:
+                            old_len = len(offspring)
+                            self.crossover_pmx(offspring, ind1, ind2)
+                            
+                            # 跟踪刚添加的个体
+                            for new_ind in offspring[old_len:]:
+                                collector.track_operator('crossover_pmx', new_ind)
+                        
+                        # 算术平均交叉
+                        elif operator_flags['crossover_arith_ave']:
+                            old_len = len(offspring)
+                            self.crossover_arith_ave(offspring, ind1, ind2)
+                            
+                            # 跟踪刚添加的个体
+                            for new_ind in offspring[old_len:]:
+                                collector.track_operator('crossover_arith_ave', new_ind)
+            
+            # 变异操作
+            for _ in range(n_operations):
+                ind = random.choice(self.population)
+                # print(ind.task_array)
+                
+                # 序列变异
+                if operator_flags['mutate_seq'] and random.random() < 0.3 and len(ind.task_array)>=2:
+                    old_len = len(offspring)
+                    self.mutate_seq(offspring, ind)
+                    
+                    # 跟踪刚添加的个体
+                    for new_ind in offspring[old_len:]:
+                        collector.track_operator('mutate_seq', new_ind)
+                
+                # 资源变异
+                if operator_flags['mutate_resources'] and random.random() < 0.3:
+                    old_len = len(offspring)
+                    self.mutate_resources(offspring, ind)
+                    
+                    # 跟踪刚添加的个体
+                    for new_ind in offspring[old_len:]:
+                        collector.track_operator('mutate_resources', new_ind)
+            
+            # 优化操作
+            for _ in range(n_operations):
+                ind = random.choice(self.population)
+                
+                # Opt1优化
+                if operator_flags['opt1'] and random.random() < 0.7:
+                    old_len = len(offspring)
+                    self.opt1(offspring, ind)
+                    
+                    # 跟踪刚添加的个体
+                    for new_ind in offspring[old_len:]:
+                        collector.track_operator('opt1', new_ind)
+                
+                # Opt2优化
+                if operator_flags['opt2'] and random.random() < 0.7:
+                    old_len = len(offspring)
+                    self.opt2(offspring, ind)
+                    
+                    # 跟踪刚添加的个体
+                    for new_ind in offspring[old_len:]:
+                        collector.track_operator('opt2', new_ind)
+                
+                # GPU优化
+                if operator_flags['opt_gpu'] and random.random() < 0.7:
+                    old_len = len(offspring)
+                    self.opt_gpu(offspring, ind)
+                    
+                    # 跟踪刚添加的个体
+                    for new_ind in offspring[old_len:]:
+                        collector.track_operator('opt_gpu', new_ind)
+            
+            # 全局负载均衡
+            for i in range(min(elite_size, len(self.population))):
+                # 负载均衡
+                if operator_flags['load_balance'] and random.random() < 0.2:
+                    balanced_ind = self.population[i].copy()
+                    collector.track_operator('load_balance')
+                    self.load_balance(balanced_ind)
+                    offspring.append(balanced_ind)
+                    collector.track_operator('load_balance', balanced_ind)
+                
+                # 任务分配优化
+                elif operator_flags['distributed_tasks'] and random.random() < 0.1:
+                    old_len = len(offspring)
+                    self.distributed_individual_tasks(offspring, self.population[i])
+                    
+                    # 跟踪刚添加的个体
+                    for new_ind in offspring[old_len:]:
+                        collector.track_operator('distributed_tasks', new_ind)
+            
+            # 评估后代适应度
+            self.sch_data.Task_time_predictor.estimate_ga_population(
+                offspring, self.sch_data.sch_task_list, all_node=True
+            )
+            
+            offspring_scores = [self.fitness(ind) for ind in offspring]
+            
+            # 合并父代和子代，选择最佳个体
+            combined = self.population + offspring
+            combined_scores = scores + offspring_scores
+            
+            sorted_indices = np.argsort(combined_scores)[::-1]
+            self.population = [combined[i] for i in sorted_indices[:num_generations_all]]
+            scores = [combined_scores[i] for i in sorted_indices[:num_generations_all]]
+            
+            # 记录本代结束
+            collector.end_generation(global_gen + 1, self.population, scores)
+            
+            self.write_log(f"Generation {global_gen + 1}: " +
+                        f"Best score = {self.population[0].score:.4f}, " +
+                        f"Avg = {np.mean(scores):.4f}")
+        
+        # 选择最佳个体
+        best_ind = max(self.population, key=lambda ind: ind.score)
+        self.sch_data.best_ind = best_ind
+        best_allocation = best_ind.task_array
+        
+        # 完成运行时间
+        metrics = collector.metrics
+        metrics['total_runtime'] = time.time() - start_time
+        metrics['active_operators'] = operator_flags
+        
+        self.write_log(f"\nFinal Results:")
+        self.write_log(f"Best individual score: {best_ind.score:.4f}")
+        self.write_log(f"GA running time: {metrics['total_runtime']:.2f} seconds")
+        
+        return best_allocation, collector
