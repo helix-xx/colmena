@@ -612,9 +612,9 @@ def _calculate_completion_time_with_state(
     task_ends = np.zeros(n_tasks, dtype=np.float64)
     
     # 记录资源变化点
-    changes_times = np.zeros(max_tasks * 2, dtype=np.float64)
-    changes_cpu = np.zeros(max_tasks * 2, dtype=np.int32)
-    changes_gpu = np.zeros(max_tasks * 2, dtype=np.int32)
+    changes_times = np.zeros(max_tasks * 2 + 1, dtype=np.float64)
+    changes_cpu = np.zeros(max_tasks * 2 + 1, dtype=np.int32)
+    changes_gpu = np.zeros(max_tasks * 2 + 1, dtype=np.int32)
     changes_count = 0
     
     # 初始化时强制记录初始状态
@@ -736,13 +736,13 @@ def _calculate_completion_time_with_state(
         if current_time > final_time:
             resource_area += final_usage * (current_time - final_time)
     
-    # 计算空闲面积（总资源容量 * 总时间 - 使用面积）
-    total_resource = resources_cpu + resources_gpu
-    total_time = current_time - start_time
-    idle_area = total_resource * total_time - resource_area
+    # 计算空闲面积（总资源容量 * 总时间 - 使用面积） fitness 不能使用空闲面积，否则会导致ga算法去计算最长的completion time 实现更大的空闲面积
+    # total_resource = resources_cpu + resources_gpu
+    # total_time = current_time - start_time
+    # idle_area = total_resource * total_time - resource_area
     
     completion_time = current_time - start_time if n_tasks > 0 else 0
-    return completion_time, idle_area, task_starts, task_ends
+    return completion_time, resource_area, task_starts, task_ends
 
 
 @jit(nopython=True)
@@ -1592,7 +1592,7 @@ class evosch2:
                 task_cpu_tuple,
                 task_gpu_tuple,
                 task_runtime_tuple,
-                self.sch_data.fixed_state[node][0]%10000,  # current_time
+                self.sch_data.fixed_state[node][0],  # current_time
                 self.sch_data.fixed_state[node][1],  # avail_cpu
                 self.sch_data.fixed_state[node][2],  # avail_gpu
                 self.sch_data.fixed_state[node][3],  # task_count
@@ -1681,7 +1681,7 @@ class evosch2:
         ind.total_runtime = total_runtimes # last task finish time
         
         # 计算适应度分数
-        ind.score = -np.max(ind.completion_time) + 0.1*resources_area_weight
+        ind.score = -np.max(ind.completion_time) - 0.1*resources_area_weight
         # ind.score = -ind.completion_time
         return ind.score
 

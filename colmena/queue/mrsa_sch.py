@@ -29,7 +29,7 @@ def run_mrsa_scheduler(sch_data:Sch_data, model_type="powSum", tasks=None):
             logger.info(f"节点 {node_name} 没有分配任务，跳过")
             continue
             
-        # folder_name = f"mrsa_{node_name}"
+        folder_name = f"mrsa_{node_name}"
         # os.makedirs(folder_name, exist_ok=True)
         
         try:
