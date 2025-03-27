@@ -2345,6 +2345,9 @@ class evosch2:
             new_score = scores[0]
             self.write_log(f"Global optimization: New best score = {new_score}")
             self.write_log(f"best ind allocations: {self.population[0].task_array}")
+            self.write_log(f"ind.completion_time: {self.population[0].completion_time}")
+            self.write_log(f"ind.resource_area: {self.population[0].resource_area}")
+            self.write_log(f"ind.total_runtime: {self.population[0].total_runtime}")
         
         # 选择最佳个体
         best_ind = max(self.population, key=lambda ind: ind.score)
@@ -2354,6 +2357,9 @@ class evosch2:
         self.write_log("\nFinal Results:")
         self.write_log(f"Best individual score: {best_ind.score}")
         self.write_log(f"Best allocation: {best_allocation}")
+        self.write_log(f"ind.completion_time: {best_ind.completion_time}")
+        self.write_log(f"ind.resource_area: {best_ind.resource_area}")
+        self.write_log(f"ind.total_runtime: {best_ind.total_runtime}")
         self.write_log(f"GA running time: {time.time() - start_time:.2f} seconds")
         
         logger.info("GA running time: %s seconds" % (time.time() - start_time))

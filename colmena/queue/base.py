@@ -106,10 +106,6 @@ class ColmenaQueues:
         self._add_task_lock = Lock()
         self._add_task_flag.set()
 
-        # register and init data class for scheduler
-        # Extract historical data to estimate running time, and register estimate_methods. by YXX
-        self._available_tasks = available_task(self.methods)
-        self._available_task_capacity = available_task_capacity
 
         self.queue_sch_lock = threading.Lock()
         self.best_allocation = None  # best allocation
@@ -130,6 +126,9 @@ class ColmenaQueues:
             self.smart_sch: SmartScheduler = SmartScheduler(
                 methods, available_task_capacity, available_resources, sch_config=None, scheduler_type=self.scheduler_type
             )
+            # self._available_tasks = available_task(self.methods)
+            self._available_tasks = self.smart_sch.sch_data.avail_task
+            self._available_task_capacity = available_task_capacity
             # timer for trigger evo_sch
             self.smart_sch.set_scheduler_timer(self.trigger_sch)
 
