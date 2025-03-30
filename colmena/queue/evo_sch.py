@@ -672,6 +672,8 @@ def _calculate_completion_time_with_state(
         
         # 分配新任务
         finish_time = current_time + duration
+        if i == 0:
+            start_time = current_time
         
         # 查找插入位置
         insert_pos = task_count
@@ -729,12 +731,14 @@ def _calculate_completion_time_with_state(
         delta = right_times[i+1] - right_times[i]
         resource_area += right_usage[i] * delta
 
-    # 添加最终释放阶段面积
+    # 添加最终释放阶段面积和开始阶段的面积
     if len(right_times) > 0:
         final_time = right_times[-1]
         final_usage = right_usage[-1]
         if current_time > final_time:
             resource_area += final_usage * (current_time - final_time)
+        if right_times[0] > start_time:
+            resource_area += right_usage[0] * (right_times[0] - start_time)
     
     # 计算空闲面积（总资源容量 * 总时间 - 使用面积） fitness 不能使用空闲面积，否则会导致ga算法去计算最长的completion time 实现更大的空闲面积
     # total_resource = resources_cpu + resources_gpu
@@ -1023,9 +1027,11 @@ def precalculate_fixed_state(sch_data:Sch_data, running_tasks_all, queued_tasks_
         running_tasks = running_tasks_all[node]
         queued_tasks = queued_tasks_all[queued_tasks_all['node'] == node]
         
+        # 由于finish_time时间戳可能在程序中偏离，我们现在将finish time全部设为start_time+total_run_time
         # 转换running_tasks为数组
         if running_tasks is not None and len(running_tasks)>0:
-            running_finish_times = np.array([task['finish_time'] for task in running_tasks], dtype=np.float64)
+            # running_finish_times = np.array([task['finish_time'] for task in running_tasks], dtype=np.float64)
+            running_finish_times = np.array([task['total_runtime'] + scheduler_time for task in running_tasks], dtype=np.float64)
             running_cpus = np.array([task['cpu'] for task in running_tasks], dtype=np.int32)
             running_gpus = np.array([task['gpu'] for task in running_tasks], dtype=np.int32)
         else:

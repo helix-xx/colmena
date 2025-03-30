@@ -100,7 +100,7 @@ class SchedulerTimer:
                     else:
                         # If the earliest start time is too close or in the past,
                         # use default scheduling time
-                        timeout = time_until_start
+                        timeout = max(time_until_start, self.min_trigger_time)
                         logger.info(f"Earliest last task starts too soon, "
                                 f"using default timeout of {timeout}s")
 
@@ -200,9 +200,12 @@ class SmartScheduler:
         hist_path.append(
             os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/simulation-results.json')
         )
-        # hist_path.append(
-        #     os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/simulation-results-more_core.json')
-        # )
+        hist_path.append(
+            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/simulation-results-e7_16-144.json')
+        )
+        hist_path.append(
+            os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/simulation-results-e7_1248.json')
+        )
         hist_path.append(
             os.path.join(self.sch_data.usr_path, 'project/colmena/multisite_/finetuning-surrogates/runs/hist_data/qimingdata/training-results_v100.json')
         )
